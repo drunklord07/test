@@ -48,12 +48,18 @@ echo ""
 echo -e "${PURPLE}IAM Password Policy Compliance Check:${NC}"
 echo "----------------------------------------------------------"
 
-# Minimum Password Length
-MIN_LENGTH=$(aws iam get-account-password-policy --query 'PasswordPolicy.MinimumPasswordLength' --output text --profile "$PROFILE")
-if [[ "$MIN_LENGTH" -ge 14 ]]; then
-    echo -e "${GREEN}✔ Minimum Password Length: $MIN_LENGTH (Compliant)${NC}"
+# Minimum Password Length (Fixed)
+MIN_LENGTH=$(aws iam get-account-password-policy --query 'PasswordPolicy.MinimumPasswordLength' --output text --profile "$PROFILE" 2>/dev/null)
+
+# Ensure it's a valid number before checking compliance
+if [[ "$MIN_LENGTH" =~ ^[0-9]+$ ]]; then
+    if [[ "$MIN_LENGTH" -ge 14 ]]; then
+        echo -e "${GREEN}✔ Minimum Password Length: $MIN_LENGTH (Compliant)${NC}"
+    else
+        echo -e "${RED}✖ Minimum Password Length: $MIN_LENGTH (Non-Compliant)${NC}"
+    fi
 else
-    echo -e "${RED}✖ Minimum Password Length: $MIN_LENGTH (Non-Compliant)${NC}"
+    echo -e "${RED}✖ Minimum Password Length: Could not retrieve (Non-Compliant)${NC}"
 fi
 
 # Require Lowercase Characters
