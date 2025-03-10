@@ -1,14 +1,14 @@
 #!/bin/bash
 
 # Description and Criteria
-description="AWS Web-Tier EBS Volume Encryption Audit"
-criteria="This script lists all web-tier EBS volumes based on a specific tag and checks if they are encrypted.
-If a volume is unencrypted, it is marked as 'Non-Compliant' (printed in red), otherwise 'Compliant' (printed in green)."
+description="AWS EBS Volume Encryption Audit"
+criteria="This script lists all EBS volumes across multiple AWS regions and checks if they are encrypted.
+Only non-compliant (unencrypted) volumes are displayed in the audit section."
 
 # Command being used to fetch the data
 command_used="Commands Used:
   1. aws ec2 describe-regions --query 'Regions[*].RegionName' --output text
-  2. aws ec2 describe-volumes --region \$REGION --filters Name=tag:\$TAG_NAME,Values=\$TAG_VALUE --query 'Volumes[*].VolumeId'
+  2. aws ec2 describe-volumes --region \$REGION --query 'Volumes[*].VolumeId'
   3. aws ec2 describe-volumes --region \$REGION --volume-ids \$VOLUME_ID --query 'Volumes[*].Encrypted'"
 
 # Color codes
@@ -37,26 +37,21 @@ if ! aws configure list-profiles | grep -q "^$PROFILE$"; then
   exit 1
 fi
 
-# Set the tag key and value for identifying web-tier volumes
-TAG_NAME="web_tier_tag"
-TAG_VALUE="web_tier_tag_value"
-
 # Get list of all AWS regions
 regions=$(aws ec2 describe-regions --query 'Regions[*].RegionName' --output text --profile "$PROFILE")
 
 # Table Header
-echo "\n+----------------+-----------------+"
-echo "| Region        | Total Volumes   |"
-echo "+----------------+-----------------+"
+echo -e "\n+----------------+-----------------+"
+echo -e "| Region        | Total Volumes   |"
+echo -e "+----------------+-----------------+"
 
 # Loop through each region and count EBS volumes
 declare -A region_vol_count
 for REGION in $regions; do
   volume_count=$(aws ec2 describe-volumes --region "$REGION" --profile "$PROFILE" \
-    --filters Name=tag:"$TAG_NAME",Values="$TAG_VALUE" \
     --query 'length(Volumes)' --output text)
 
-  if [ "$volume_count" == "None" ]; then
+  if [ "$volume_count" == "None" ] || [ -z "$volume_count" ]; then
     volume_count=0
   fi
 
@@ -66,29 +61,40 @@ done
 echo "+----------------+-----------------+"
 echo ""
 
-# Audit only regions with web-tier volumes
+# Audit only regions with EBS volumes
 for REGION in "${!region_vol_count[@]}"; do
   if [ "${region_vol_count[$REGION]}" -gt 0 ]; then
     echo -e "${PURPLE}Starting audit for region: $REGION${NC}"
 
+    # Fetch all volume IDs (ensure each ID is on a new line)
     volumes=$(aws ec2 describe-volumes --region "$REGION" --profile "$PROFILE" \
-      --filters Name=tag:"$TAG_NAME",Values="$TAG_VALUE" \
-      --query 'Volumes[*].VolumeId' --output text)
+      --query 'Volumes[*].VolumeId' --output text | tr ' ' '\n')
 
+    if [ -z "$volumes" ]; then
+      echo "No volumes found in this region."
+      continue
+    fi
+
+    non_compliant_found=false
     while read -r volume_id; do
       encrypted=$(aws ec2 describe-volumes --region "$REGION" --profile "$PROFILE" \
         --volume-ids "$volume_id" --query 'Volumes[*].Encrypted' --output text)
 
-      echo "--------------------------------------------------"
-      echo "Volume ID: $volume_id"
       if [ "$encrypted" == "False" ]; then
-        echo -e "Status: ${RED} Non-Compliant (Not Encrypted)${NC}"
-      else
-        echo -e "Status: ${GREEN} Compliant (Encrypted)${NC}"
+        if [ "$non_compliant_found" == "false" ]; then
+          echo "--------------------------------------------------"
+          echo -e "${RED}Non-Compliant Volumes in region: $REGION${NC}"
+          echo "--------------------------------------------------"
+          non_compliant_found=true
+        fi
+        echo "Volume ID: $volume_id"
       fi
     done <<< "$volumes"
-    echo "--------------------------------------------------"
+
+    if [ "$non_compliant_found" == "true" ]; then
+      echo "--------------------------------------------------"
+    fi
   fi
 done
 
-echo "Audit completed for all regions with web-tier EBS volumes."
+echo "Audit completed for all regions with EBS volumes."
