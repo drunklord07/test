@@ -51,15 +51,14 @@ declare -A region_non_compliant_count
 
 # Loop through each region
 for REGION in $regions; do
-  # Get all AMIs (faster and accurate)
-  readarray -t images < <(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self \
-    --query 'Images[*].[ImageId, Tags]' --output text)
+  # Get total AMIs count per region
+  ami_count=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self --query 'Images[*].[ImageId]' --output text | wc -l)
+  
+  if [[ -z "$ami_count" || "$ami_count" -eq 0 ]]; then
+    ami_count=0
+  fi
 
-  # Count total AMIs
-  ami_count=${#images[@]}
   region_ami_count["$REGION"]=$ami_count
-
-  # Print region summary
   printf "| %-14s | %-15s |\n" "$REGION" "$ami_count"
 done
 echo "+----------------+-----------------+"
@@ -76,20 +75,18 @@ for REGION in "${!region_ami_count[@]}"; do
     compliant_count=0
     non_compliant_count=0
 
-    # Fetch AMIs again for detailed audit
-    readarray -t images < <(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self \
-      --query 'Images[*].[ImageId, Tags]' --output text)
+    # Fetch AMIs and check their tags
+    while read -r image_id tags; do
+      if [[ -z "$image_id" ]]; then
+        continue
+      fi
 
-    for ((i=0; i<${#images[@]}; i+=2)); do
-      ami_id="${images[i]}"
-      tag_data="${images[i+1]}"
-
-      if [[ -z "$tag_data" || "$tag_data" == "None" ]]; then
+      if [[ -z "$tags" || "$tags" == "None" ]]; then
         non_compliant_count=$((non_compliant_count + 1))
       else
         compliant_count=$((compliant_count + 1))
       fi
-    done
+    done < <(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self --query 'Images[*].[ImageId, Tags]' --output text)
 
     region_compliant_count["$REGION"]=$compliant_count
     region_non_compliant_count["$REGION"]=$non_compliant_count
