@@ -46,14 +46,14 @@ declare -A region_compliant
 
 # Audit each region
 for REGION in $regions; do
-  # Get all KMS keys as plain text
-  key_ids=$(aws kms list-keys --region "$REGION" --profile "$PROFILE" --no-paginate --query 'Keys[*].KeyId' --output text)
-  
-  # Ensure accurate count by counting actual key IDs
-  checked_count=$(echo "$key_ids" | wc -w)
+  # Get all KMS keys and properly handle them
+  readarray -t key_ids < <(aws kms list-keys --region "$REGION" --profile "$PROFILE" --no-paginate --query 'Keys[*].KeyId' --output text)
+
+  # Get correct count of keys
+  checked_count=${#key_ids[@]}
 
   # If no keys found, skip processing for this region
-  if [[ -z "$key_ids" ]]; then
+  if [[ $checked_count -eq 0 ]]; then
     checked_count=0
   fi
 
@@ -61,7 +61,7 @@ for REGION in $regions; do
   compliant_keys=()
 
   # Loop through each key ID
-  for KEY_ID in $key_ids; do
+  for KEY_ID in "${key_ids[@]}"; do
     # Get KMS Key Policy
     key_policy=$(aws kms get-key-policy --region "$REGION" --profile "$PROFILE" --key-id "$KEY_ID" --policy-name default --query 'Policy' --output json 2>/dev/null)
 
