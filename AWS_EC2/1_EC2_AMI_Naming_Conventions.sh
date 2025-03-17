@@ -3,12 +3,12 @@
 # Description and Criteria
 description="AWS AMI Tagging Audit"
 criteria="This script lists all AMIs owned by the account and checks if they have name tags.
-If an AMI lacks a name tag, it is marked as 'Non-Compliant' (printed in red), otherwise 'Compliant' (printed in green)."
+If an AMI lacks a name tag, it is marked as 'Non-Compliant' (printed in red), otherwise counted as 'Compliant'."
 
-# Command being used to fetch the data
+# Command being used
 command_used="Commands Used:
   1. aws ec2 describe-regions --query 'Regions[*].RegionName' --output text
-  2. aws ec2 describe-images --region \$REGION --owners self --query 'Images[*].{ID:ImageId,Tags:Tags}'"
+  2. aws ec2 describe-images --region \$REGION --owners self --query 'Images[*].[ImageId, Tags]' --output text"
 
 # Color codes
 GREEN='\033[0;32m'
@@ -16,7 +16,7 @@ RED='\033[0;31m'
 PURPLE='\033[0;35m'
 NC='\033[0m'  # No color
 
-# Display description, criteria, and the command being used
+# Display metadata
 echo ""
 echo "---------------------------------------------------------------------"
 echo -e "${PURPLE}Description: $description${NC}"
@@ -40,48 +40,64 @@ fi
 regions=$(aws ec2 describe-regions --query 'Regions[*].RegionName' --output text --profile "$PROFILE")
 
 # Table Header
-echo "\n+----------------+-----------------+"
+echo "+----------------+-----------------+"
 echo "| Region        | Total AMIs       |"
 echo "+----------------+-----------------+"
 
-# Loop through each region and count AMIs
+# Declare associative arrays for storing AMI data
 declare -A region_ami_count
+declare -A region_compliant_count
+declare -A region_non_compliant_count
+
+# Loop through each region
 for REGION in $regions; do
-  ami_count=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self \
-    --query 'length(Images)' --output text)
+  # Get all AMIs (faster and accurate)
+  readarray -t images < <(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self \
+    --query 'Images[*].[ImageId, Tags]' --output text)
 
-  if [ "$ami_count" == "None" ]; then
-    ami_count=0
-  fi
+  # Count total AMIs
+  ami_count=${#images[@]}
+  region_ami_count["$REGION"]=$ami_count
 
-  region_ami_count[$REGION]=$ami_count
+  # Print region summary
   printf "| %-14s | %-15s |\n" "$REGION" "$ami_count"
 done
 echo "+----------------+-----------------+"
 echo ""
 
-# Audit only regions with AMIs
+# Audit Section (Count only)
+echo -e "\n${PURPLE}Audit Summary:${NC}"
+echo "+----------------+---------------+-----------------+"
+echo "| Region        | Compliant AMIs | Non-Compliant AMIs |"
+echo "+----------------+---------------+-----------------+"
+
 for REGION in "${!region_ami_count[@]}"; do
   if [ "${region_ami_count[$REGION]}" -gt 0 ]; then
-    echo -e "${PURPLE}Starting audit for region: $REGION${NC}"
+    compliant_count=0
+    non_compliant_count=0
 
-    images=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self \
-      --query 'Images[*].{ID:ImageId,Tags:Tags}' --output json)
+    # Fetch AMIs again for detailed audit
+    readarray -t images < <(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self \
+      --query 'Images[*].[ImageId, Tags]' --output text)
 
-    echo "$images" | jq -c '.[]' | while read -r image; do
-      image_id=$(echo "$image" | jq -r '.ID')
-      tags=$(echo "$image" | jq -r '.Tags // empty')
+    for ((i=0; i<${#images[@]}; i+=2)); do
+      ami_id="${images[i]}"
+      tag_data="${images[i+1]}"
 
-      echo "--------------------------------------------------"
-      echo "AMI ID: $image_id"
-      if [ -z "$tags" ]; then
-        echo -e "Status: ${RED} Non-Compliant (No Tags)${NC}"
+      if [[ -z "$tag_data" || "$tag_data" == "None" ]]; then
+        non_compliant_count=$((non_compliant_count + 1))
       else
-        echo -e "Status: ${GREEN} Compliant (Tagged)${NC}"
+        compliant_count=$((compliant_count + 1))
       fi
     done
-    echo "--------------------------------------------------"
+
+    region_compliant_count["$REGION"]=$compliant_count
+    region_non_compliant_count["$REGION"]=$non_compliant_count
+
+    printf "| %-14s | %-13s | %-17s |\n" "$REGION" "$compliant_count" "$non_compliant_count"
   fi
 done
 
+echo "+----------------+---------------+-----------------+"
+echo ""
 echo "Audit completed for all regions with AMIs."
