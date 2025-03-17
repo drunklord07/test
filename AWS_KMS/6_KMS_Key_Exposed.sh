@@ -6,7 +6,7 @@ criteria="This script verifies if any KMS CMKs have overly permissive key polici
 
 # Commands used
 command_used="Commands Used:
-  1. aws kms list-keys --region \$REGION --no-paginate --query 'Keys[*].KeyId' --output json
+  1. aws kms list-keys --region \$REGION --no-paginate --query 'Keys[*].KeyId' --output text
   2. aws kms get-key-policy --region \$REGION --key-id \$KEY_ID --policy-name default --query 'Policy' --output json"
 
 # Color codes
@@ -46,15 +46,22 @@ declare -A region_compliant
 
 # Audit each region
 for REGION in $regions; do
-  # Get all KMS keys as a JSON array and count them correctly
-  key_ids=$(aws kms list-keys --region "$REGION" --profile "$PROFILE" --no-paginate --query 'Keys[*].KeyId' --output json)
-  checked_count=$(echo "$key_ids" | grep -o 'KeyId' | wc -l)
+  # Get all KMS keys as plain text
+  key_ids=$(aws kms list-keys --region "$REGION" --profile "$PROFILE" --no-paginate --query 'Keys[*].KeyId' --output text)
+  
+  # Ensure accurate count by counting actual key IDs
+  checked_count=$(echo "$key_ids" | wc -w)
+
+  # If no keys found, skip processing for this region
+  if [[ -z "$key_ids" ]]; then
+    checked_count=0
+  fi
 
   non_compliant_keys=()
   compliant_keys=()
 
   # Loop through each key ID
-  for KEY_ID in $(echo "$key_ids" | tr -d '[]" ,' | sed '/^$/d'); do
+  for KEY_ID in $key_ids; do
     # Get KMS Key Policy
     key_policy=$(aws kms get-key-policy --region "$REGION" --profile "$PROFILE" --key-id "$KEY_ID" --policy-name default --query 'Policy' --output json 2>/dev/null)
 
