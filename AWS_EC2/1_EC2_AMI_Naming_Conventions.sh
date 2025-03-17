@@ -51,7 +51,7 @@ declare -A region_non_compliant_count
 
 # Loop through each region
 for REGION in $regions; do
-  # Get total AMIs count per region
+  # Get total AMI count per region
   ami_count=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self --query 'Images[*].[ImageId]' --output text | wc -l)
   
   if [[ -z "$ami_count" || "$ami_count" -eq 0 ]]; then
@@ -76,17 +76,22 @@ for REGION in "${!region_ami_count[@]}"; do
     non_compliant_count=0
 
     # Fetch AMIs and check their tags
-    while read -r image_id tags; do
+    while read -r image_id tag1 tag2; do
       if [[ -z "$image_id" ]]; then
         continue
       fi
 
-      if [[ -z "$tags" || "$tags" == "None" ]]; then
+      if [[ -z "$tag1" && -z "$tag2" ]]; then
         non_compliant_count=$((non_compliant_count + 1))
       else
         compliant_count=$((compliant_count + 1))
       fi
     done < <(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self --query 'Images[*].[ImageId, Tags]' --output text)
+
+    # Ensure the total count is correct
+    if (( compliant_count + non_compliant_count > region_ami_count["$REGION"] )); then
+      non_compliant_count=$((region_ami_count["$REGION"] - compliant_count))
+    fi
 
     region_compliant_count["$REGION"]=$compliant_count
     region_non_compliant_count["$REGION"]=$non_compliant_count
