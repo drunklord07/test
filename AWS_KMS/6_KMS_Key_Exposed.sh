@@ -6,12 +6,11 @@ criteria="This script verifies if any KMS CMKs have overly permissive key polici
 
 # Commands used
 command_used="Commands Used:
-  1. aws kms list-keys --region \$REGION --query 'Keys[*].KeyId' --output text --no-paginate
+  1. aws kms list-keys --region \$REGION --no-paginate --query 'Keys[*].KeyId' --output text
   2. aws kms get-key-policy --region \$REGION --key-id \$KEY_ID --policy-name default --query 'Policy' --output text"
 
 # Color codes
 GREEN='\033[0;32m'
-RED='\033[0;31m'
 PURPLE='\033[0;35m'
 NC='\033[0m'  # No color
 
@@ -43,48 +42,36 @@ echo "Region         | Total CMKs Checked"
 echo "+--------------+-------------------+"
 
 declare -A region_compliance
-declare -A region_non_compliance
+declare -A region_compliant
 
 # Audit each region
 for REGION in $regions; do
-  # Fetch unique CMK IDs (fixed issue of duplicate counts)
-  key_ids=($(aws kms list-keys --region "$REGION" --profile "$PROFILE" --query 'Keys[*].KeyId' --output text --no-paginate))
+  # List all KMS keys without pagination
+  key_ids=$(aws kms list-keys --region "$REGION" --profile "$PROFILE" --no-paginate --query 'Keys[*].KeyId' --output text)
 
-  # Count CMKs correctly
-  checked_count=${#key_ids[@]}
-
-  # Skip region if no CMKs exist
-  if [[ $checked_count -eq 0 ]]; then
-    printf "| %-14s | %-18s |\n" "$REGION" "0"
-    continue
-  fi
-
-  compliant_keys=()
+  # Count number of keys accurately
+  checked_count=$(echo "$key_ids" | wc -w)
   non_compliant_keys=()
+  compliant_keys=()
 
-  for KEY_ID in "${key_ids[@]}"; do
+  for KEY_ID in $key_ids; do
     # Get KMS Key Policy
     key_policy=$(aws kms get-key-policy --region "$REGION" --profile "$PROFILE" --key-id "$KEY_ID" --policy-name default --query 'Policy' --output text 2>/dev/null)
 
-    # Skip if policy retrieval fails
-    if [[ -z "$key_policy" ]]; then
-      continue
-    fi
-
-    # Check for overly permissive policies
-    if echo "$key_policy" | grep -q '"Principal": "*"' || echo "$key_policy" | grep -q '"AWS": "*"'; then
-      if ! echo "$key_policy" | grep -q '"Condition"'; then
+    # Check if policy is overly permissive
+    if [[ "$key_policy" == *'"Principal": "*"'* || "$key_policy" == *'"AWS": "*"'* ]]; then
+      if [[ "$key_policy" != *'"Condition"'* ]]; then
         non_compliant_keys+=("$KEY_ID")
-        continue
+      else
+        compliant_keys+=("$KEY_ID")
       fi
+    else
+      compliant_keys+=("$KEY_ID")
     fi
-
-    # If not non-compliant, mark as compliant
-    compliant_keys+=("$KEY_ID")
   done
 
-  region_non_compliance["$REGION"]="${non_compliant_keys[@]}"
-  region_compliance["$REGION"]="${compliant_keys[@]}"
+  region_compliance["$REGION"]="${non_compliant_keys[@]}"
+  region_compliant["$REGION"]="${compliant_keys[@]}"
 
   printf "| %-14s | %-18s |\n" "$REGION" "$checked_count"
 done
@@ -94,50 +81,22 @@ echo ""
 
 # Audit Section
 non_compliant_found=false
-compliant_found=false
 
-for region in "${!region_non_compliance[@]}"; do
-  if [[ -n "${region_non_compliance[$region]}" ]]; then
+for region in "${!region_compliance[@]}"; do
+  if [[ -n "${region_compliance[$region]}" ]]; then
     non_compliant_found=true
     break
   fi
 done
 
-for region in "${!region_compliance[@]}"; do
-  if [[ -n "${region_compliance[$region]}" ]]; then
-    compliant_found=true
-    break
-  fi
-done
-
 if $non_compliant_found; then
-  echo -e "${RED}Non-Compliant AWS Regions:${NC}"
-  echo "----------------------------------------------------------------"
-
-  for region in "${!region_non_compliance[@]}"; do
-    if [[ -n "${region_non_compliance[$region]}" ]]; then
-      echo -e "${PURPLE}Region: $region${NC}"
-      echo "Non-Compliant KMS Keys:"
-      for key in ${region_non_compliance[$region]}; do
-        echo " - $key"
-      done
-      echo "----------------------------------------------------------------"
-    fi
-  done
-else
-  echo -e "${GREEN}No non-compliant KMS keys found in any region.${NC}"
-fi
-
-echo ""
-
-if $compliant_found; then
-  echo -e "${GREEN}Compliant AWS Regions:${NC}"
+  echo -e "${PURPLE}Non-Compliant AWS Regions:${NC}"
   echo "----------------------------------------------------------------"
 
   for region in "${!region_compliance[@]}"; do
     if [[ -n "${region_compliance[$region]}" ]]; then
       echo -e "${PURPLE}Region: $region${NC}"
-      echo "Compliant KMS Keys:"
+      echo "Non-Compliant KMS Keys:"
       for key in ${region_compliance[$region]}; do
         echo " - $key"
       done
@@ -145,7 +104,22 @@ if $compliant_found; then
     fi
   done
 else
-  echo -e "${RED}No compliant KMS keys found.${NC}"
+  echo -e "${GREEN}All AWS regions have compliant KMS key policies.${NC}"
 fi
+
+# Compliant Keys Section
+echo -e "${GREEN}Compliant AWS Regions:${NC}"
+echo "----------------------------------------------------------------"
+
+for region in "${!region_compliant[@]}"; do
+  if [[ -n "${region_compliant[$region]}" ]]; then
+    echo -e "${GREEN}Region: $region${NC}"
+    echo "Compliant KMS Keys:"
+    for key in ${region_compliant[$region]}; do
+      echo " - $key"
+    done
+    echo "----------------------------------------------------------------"
+  fi
+done
 
 echo "Audit completed for all regions."
