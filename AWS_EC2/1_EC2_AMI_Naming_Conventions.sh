@@ -8,7 +8,7 @@ If an AMI lacks a 'Name' tag, it is marked as 'Non-Compliant' (printed in red). 
 # Command being used
 command_used="Commands Used:
   1. aws ec2 describe-regions --query 'Regions[*].RegionName' --output text
-  2. aws ec2 describe-images --region \$REGION --owners self --output table --query 'Images[*].Tags'"
+  2. aws ec2 describe-images --region \$REGION --owners self --query 'Images[*].[ImageId, Tags[?Key==\`Name\`].Value | [0]]' --output text"
 
 # Color codes
 GREEN='\033[0;32m'
@@ -46,7 +46,7 @@ echo "+----------------+-----------------+"
 
 declare -A region_ami_count
 for REGION in $regions; do
-  ami_count=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self --query 'Images[*].ImageId' --output text | wc -l)
+  ami_count=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self --query 'length(Images)' --output text)
   ami_count=${ami_count:-0} # Default to 0 if no AMIs
 
   region_ami_count[$REGION]=$ami_count
@@ -66,11 +66,14 @@ for REGION in "${!region_ami_count[@]}"; do
   if [ "$ami_total" -gt 0 ]; then
     compliant_count=0
     non_compliant_count=0
+    processed_amis=0
 
     while IFS=$'\t' read -r image_id name_tag; do
       if [[ -z "$image_id" ]]; then
         continue
       fi
+
+      processed_amis=$((processed_amis + 1))
 
       if [[ -z "$name_tag" || "$name_tag" == "None" ]]; then
         non_compliant_count=$((non_compliant_count + 1))
@@ -84,8 +87,10 @@ for REGION in "${!region_ami_count[@]}"; do
       fi
     done < <(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self --query 'Images[*].[ImageId, Tags[?Key==`Name`].Value | [0]]' --output text)
 
-    # Ensure we never exceed the total count
+    # Correct any inconsistencies
     if (( compliant_count + non_compliant_count > ami_total )); then
+      non_compliant_count=$((ami_total - compliant_count))
+    elif (( compliant_count + non_compliant_count < ami_total )); then
       non_compliant_count=$((ami_total - compliant_count))
     fi
 
