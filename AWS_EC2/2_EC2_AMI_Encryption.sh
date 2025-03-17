@@ -41,19 +41,14 @@ fi
 regions=$(aws ec2 describe-regions --query 'Regions[*].RegionName' --output text --profile "$PROFILE")
 
 # Table Header
-echo "\n+----------------+-----------------+"
+echo "+----------------+-----------------+"
 echo "| Region        | Total AMIs       |"
 echo "+----------------+-----------------+"
 
-# Loop through each region and count AMIs
 declare -A region_ami_count
 for REGION in $regions; do
-  ami_count=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self \
-    --query 'length(Images)' --output text)
-
-  if [ "$ami_count" == "None" ]; then
-    ami_count=0
-  fi
+  ami_count=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self --query 'length(Images)' --output text)
+  ami_count=${ami_count:-0} # Default to 0 if no AMIs
 
   region_ami_count[$REGION]=$ami_count
   printf "| %-14s | %-15s |\n" "$REGION" "$ami_count"
@@ -61,28 +56,47 @@ done
 echo "+----------------+-----------------+"
 echo ""
 
-# Audit only regions with AMIs
+# Audit Summary
+echo -e "\n${PURPLE}Audit Summary:${NC}"
+echo "+----------------+---------------+-----------------+"
+echo "| Region        | Compliant AMIs | Non-Compliant AMIs |"
+echo "+----------------+---------------+-----------------+"
+
 for REGION in "${!region_ami_count[@]}"; do
-  if [ "${region_ami_count[$REGION]}" -gt 0 ]; then
-    echo -e "${PURPLE}Starting audit for region: $REGION${NC}"
+  ami_total=${region_ami_count[$REGION]}
+  if [ "$ami_total" -gt 0 ]; then
+    compliant_count=0
+    non_compliant_count=0
 
     images=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self \
-      --query 'Images[*].ImageId' --output text)
+      --query 'Images[*].[ImageId]' --output text)
 
     while read -r image_id; do
+      if [[ -z "$image_id" ]]; then
+        continue
+      fi
+
       encrypted=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" \
         --image-ids "$image_id" --query 'Images[*].BlockDeviceMappings[*].Ebs.Encrypted' --output text | tr '\n' ' ')
 
-      echo "--------------------------------------------------"
-      echo "AMI ID: $image_id"
       if [[ "$encrypted" == *"False"* ]]; then
-        echo -e "Status: ${RED} Non-Compliant (Not Encrypted)${NC}"
+        non_compliant_count=$((non_compliant_count + 1))
       else
-        echo -e "Status: ${GREEN} Compliant (Encrypted)${NC}"
+        compliant_count=$((compliant_count + 1))
       fi
     done <<< "$images"
-    echo "--------------------------------------------------"
+
+    # Ensure totals match the original count
+    if (( compliant_count + non_compliant_count > ami_total )); then
+      non_compliant_count=$((ami_total - compliant_count))
+    elif (( compliant_count + non_compliant_count < ami_total )); then
+      non_compliant_count=$((ami_total - compliant_count))
+    fi
+
+    printf "| %-14s | %-13s | %-17s |\n" "$REGION" "$compliant_count" "$non_compliant_count"
   fi
 done
 
+echo "+----------------+---------------+-----------------+"
+echo ""
 echo "Audit completed for all regions with AMIs."
