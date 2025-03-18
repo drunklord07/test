@@ -5,11 +5,11 @@ description="AWS AMI Encryption Audit"
 criteria="This script lists all AMIs owned by the account and checks if their snapshots are encrypted.
 If an AMI is unencrypted, it is marked as 'Non-Compliant' (printed in red), otherwise 'Compliant' (printed in green)."
 
-# Command being used to fetch the data
+# Command being used
 command_used="Commands Used:
   1. aws ec2 describe-regions --query 'Regions[*].RegionName' --output text
   2. aws ec2 describe-images --region \$REGION --owners self --query 'Images[*].ImageId'
-  3. aws ec2 describe-images --region \$REGION --image-ids \$IMAGE_ID --query 'Images[*].BlockDeviceMappings[*].Ebs.Encrypted[]'"
+  3. aws ec2 describe-images --region \$REGION --image-ids <batch_of_image_ids> --query 'Images[*].BlockDeviceMappings[*].Ebs.Encrypted'"
 
 # Color codes
 GREEN='\033[0;32m'
@@ -17,7 +17,7 @@ RED='\033[0;31m'
 PURPLE='\033[0;35m'
 NC='\033[0m'  # No color
 
-# Display description, criteria, and the command being used
+# Display header
 echo ""
 echo "---------------------------------------------------------------------"
 echo -e "${PURPLE}Description: $description${NC}"
@@ -68,6 +68,7 @@ for REGION in "${!region_ami_count[@]}"; do
     compliant_count=0
     non_compliant_count=0
 
+    # Get list of AMIs
     images=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self \
       --query 'Images[*].ImageId' --output text)
 
@@ -75,20 +76,24 @@ for REGION in "${!region_ami_count[@]}"; do
       continue # Skip if no AMIs exist
     fi
 
-    while read -r image_id; do
-      if [[ -z "$image_id" || "$image_id" == "None" ]]; then
-        continue # Skip invalid AMI IDs
-      fi
+    # Process AMIs in batches of 10 to avoid argument limit issues
+    ami_list=($images)
+    batch_size=10
+    for ((i=0; i<${#ami_list[@]}; i+=batch_size)); do
+      batch=("${ami_list[@]:i:batch_size}")
 
-      encrypted=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" \
-        --image-ids "$image_id" --query 'Images[*].BlockDeviceMappings[*].Ebs.Encrypted' --output text | tr '\n' ' ')
+      # Get encryption details for batch
+      encrypted_list=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" \
+        --image-ids "${batch[@]}" --query 'Images[*].BlockDeviceMappings[*].Ebs.Encrypted' --output text | tr '\n' ' ')
 
-      if [[ "$encrypted" == *"False"* ]]; then
-        non_compliant_count=$((non_compliant_count + 1))
-      else
-        compliant_count=$((compliant_count + 1))
-      fi
-    done <<< "$images"
+      for encrypted in $encrypted_list; do
+        if [[ "$encrypted" == "False" ]]; then
+          non_compliant_count=$((non_compliant_count + 1))
+        else
+          compliant_count=$((compliant_count + 1))
+        fi
+      done
+    done
 
     # Ensure totals match the original count
     if (( compliant_count + non_compliant_count > ami_total )); then
