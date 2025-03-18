@@ -15,7 +15,6 @@ command_used="Commands Used:
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
 NC='\033[0m'  # No color
 
 # Display script metadata
@@ -48,6 +47,7 @@ echo "+----------------+----------------+"
 
 # Dictionary for storing NACL counts
 declare -A nacl_counts
+declare -A non_compliant_found
 
 # Audit each region
 for REGION in $regions; do
@@ -65,7 +65,7 @@ echo ""
 # Audit each NACL for ineffective or redundant DENY rules
 for REGION in "${!nacl_counts[@]}"; do
   if [ "${nacl_counts[$REGION]}" -gt 0 ]; then
-    echo -e "${PURPLE}Starting audit for region: $REGION${NC}"
+    non_compliant_found[$REGION]=0
 
     for NACL_ID in $(aws ec2 describe-network-acls --region "$REGION" --profile "$PROFILE" \
       --query 'NetworkAcls[*].NetworkAclId' --output text); do
@@ -78,59 +78,54 @@ for REGION in "${!nacl_counts[@]}"; do
         --network-acl-ids "$NACL_ID" --query 'NetworkAcls[*].Entries[?(@.Egress==true)]' --output text)
 
       # Process inbound rules
-      if [ -n "$inbound_rules" ]; then
-        echo -e "${CYAN}Checking inbound rules for NACL: $NACL_ID${NC}"
+      while read -r rule_number protocol port_range cidr rule_action; do
+        if [ "$rule_action" == "DENY" ]; then
+          # Check if there's a higher priority (lower rule number) ALLOW rule with the same criteria
+          higher_allow=$(echo "$inbound_rules" | awk -v rule="$rule_number" -v port="$port_range" -v cidr="$cidr" \
+            '$1 < rule && $4 == "ALLOW" && $3 == port && $5 == cidr {print $1}')
 
-        while read -r rule_number protocol port_range cidr rule_action; do
-          if [ "$rule_action" == "DENY" ]; then
-            # Check if there's a higher priority (lower rule number) ALLOW rule with the same criteria
-            higher_allow=$(echo "$inbound_rules" | awk -v rule="$rule_number" -v port="$port_range" -v cidr="$cidr" \
-              '$1 < rule && $4 == "ALLOW" && $3 == port && $5 == cidr {print $1}')
-
-            if [ -n "$higher_allow" ]; then
-              STATUS="${RED}Non-Compliant (Ineffective DENY Rule)${NC}"
-              echo "--------------------------------------------------"
-              echo "Region: $REGION"
-              echo "NACL ID: $NACL_ID"
-              echo "Rule Number: $rule_number"
-              echo "Protocol: $protocol"
-              echo "Port Range: $port_range"
-              echo "CIDR Block: $cidr"
-              echo "Rule Action: $rule_action"
-              echo "Status: $STATUS"
-              echo "--------------------------------------------------"
-            fi
+          if [ -n "$higher_allow" ]; then
+            non_compliant_found[$REGION]=1
+            echo "--------------------------------------------------"
+            echo "Region: $REGION"
+            echo "NACL ID: $NACL_ID"
+            echo "Rule Number: $rule_number"
+            echo "Protocol: $protocol"
+            echo "Port Range: $port_range"
+            echo "CIDR Block: $cidr"
+            echo -e "Status: ${RED}Non-Compliant (Ineffective DENY Rule)${NC}"
+            echo "--------------------------------------------------"
           fi
-        done <<< "$inbound_rules"
-      fi
+        fi
+      done <<< "$inbound_rules"
 
       # Process outbound rules
-      if [ -n "$outbound_rules" ]; then
-        echo -e "${CYAN}Checking outbound rules for NACL: $NACL_ID${NC}"
+      while read -r rule_number protocol port_range cidr rule_action; do
+        if [ "$rule_action" == "DENY" ]; then
+          # Check if there's a higher priority (lower rule number) ALLOW rule with the same criteria
+          higher_allow=$(echo "$outbound_rules" | awk -v rule="$rule_number" -v port="$port_range" -v cidr="$cidr" \
+            '$1 < rule && $4 == "ALLOW" && $3 == port && $5 == cidr {print $1}')
 
-        while read -r rule_number protocol port_range cidr rule_action; do
-          if [ "$rule_action" == "DENY" ]; then
-            # Check if there's a higher priority (lower rule number) ALLOW rule with the same criteria
-            higher_allow=$(echo "$outbound_rules" | awk -v rule="$rule_number" -v port="$port_range" -v cidr="$cidr" \
-              '$1 < rule && $4 == "ALLOW" && $3 == port && $5 == cidr {print $1}')
-
-            if [ -n "$higher_allow" ]; then
-              STATUS="${RED}Non-Compliant (Ineffective DENY Rule)${NC}"
-              echo "--------------------------------------------------"
-              echo "Region: $REGION"
-              echo "NACL ID: $NACL_ID"
-              echo "Rule Number: $rule_number"
-              echo "Protocol: $protocol"
-              echo "Port Range: $port_range"
-              echo "CIDR Block: $cidr"
-              echo "Rule Action: $rule_action"
-              echo "Status: $STATUS"
-              echo "--------------------------------------------------"
-            fi
+          if [ -n "$higher_allow" ]; then
+            non_compliant_found[$REGION]=1
+            echo "--------------------------------------------------"
+            echo "Region: $REGION"
+            echo "NACL ID: $NACL_ID"
+            echo "Rule Number: $rule_number"
+            echo "Protocol: $protocol"
+            echo "Port Range: $port_range"
+            echo "CIDR Block: $cidr"
+            echo -e "Status: ${RED}Non-Compliant (Ineffective DENY Rule)${NC}"
+            echo "--------------------------------------------------"
           fi
-        done <<< "$outbound_rules"
-      fi
+        fi
+      done <<< "$outbound_rules"
     done
+
+    # If no non-compliant rules were found, print a single compliant message
+    if [[ "${non_compliant_found[$REGION]}" -eq 0 ]]; then
+      echo -e "${GREEN}All NACL rules in region $REGION are compliant!${NC}"
+    fi
   fi
 done
 
