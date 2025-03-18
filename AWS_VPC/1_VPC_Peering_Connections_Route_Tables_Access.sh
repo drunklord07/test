@@ -62,6 +62,9 @@ done
 echo "+----------------+----------------+"
 echo ""
 
+# Track compliance status
+total_non_compliant=0
+
 # Audit each VPC peering connection for overly permissive routes
 for REGION in "${!vpc_counts[@]}"; do
   if [ "${vpc_counts[$REGION]}" -gt 0 ]; then
@@ -79,25 +82,38 @@ for REGION in "${!vpc_counts[@]}"; do
         continue
       fi
 
+      non_compliant_found=false
+
       # Check for overly permissive routes
       while read -r dest_cidr peering_id; do
         if [[ -n "$peering_id" && "$peering_id" == "$PEERING_ID" ]]; then
           cidr_suffix=$(echo "$dest_cidr" | awk -F'/' '{print $2}')
           if [[ "$cidr_suffix" -le 16 ]]; then
-            STATUS="${RED}Non-Compliant (Overly Permissive Route)${NC}"
+            non_compliant_found=true
+            ((total_non_compliant++))
 
             # Print audit details
             echo "--------------------------------------------------"
             echo "Region: $REGION"
             echo "VPC Peering Connection: $PEERING_ID"
             echo "Destination CIDR Block: $dest_cidr"
-            echo "Status: $STATUS"
+            echo -e "Status: ${RED}Non-Compliant (Overly Permissive Route)${NC}"
             echo "--------------------------------------------------"
           fi
         fi
       done <<< "$routes"
+
+      # If no non-compliant routes were found
+      if ! $non_compliant_found; then
+        echo -e "${GREEN}All routes for VPC Peering $PEERING_ID in $REGION are compliant.${NC}"
+      fi
     done
   fi
 done
+
+# If no non-compliant routes were found in any region
+if [[ $total_non_compliant -eq 0 ]]; then
+  echo -e "${GREEN} All VPC peering routes in all regions are compliant!${NC}"
+fi
 
 echo "Audit completed for all regions."
