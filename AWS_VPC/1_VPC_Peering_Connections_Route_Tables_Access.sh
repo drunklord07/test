@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # Description and Criteria
 description="AWS Audit for Overly Permissive VPC Peering Route Tables"
 criteria="This script identifies VPC peering connections with overly permissive routing policies.
@@ -15,7 +14,6 @@ command_used="Commands Used:
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
 NC='\033[0m'  # No color
 
 # Display script metadata
@@ -48,6 +46,7 @@ echo "+----------------+----------------+"
 
 # Dictionary for storing VPC peering connection counts
 declare -A vpc_counts
+declare -A non_compliant_found
 
 # Audit each region
 for REGION in $regions; do
@@ -62,13 +61,10 @@ done
 echo "+----------------+----------------+"
 echo ""
 
-# Track compliance status
-total_non_compliant=0
-
 # Audit each VPC peering connection for overly permissive routes
 for REGION in "${!vpc_counts[@]}"; do
   if [ "${vpc_counts[$REGION]}" -gt 0 ]; then
-    echo -e "${PURPLE}Starting audit for region: $REGION${NC}"
+    non_compliant_found[$REGION]=0
 
     for PEERING_ID in $(aws ec2 describe-vpc-peering-connections --region "$REGION" --profile "$PROFILE" \
       --filters Name=status-code,Values=active --query 'VpcPeeringConnections[*].VpcPeeringConnectionId' --output text); do
@@ -82,17 +78,14 @@ for REGION in "${!vpc_counts[@]}"; do
         continue
       fi
 
-      non_compliant_found=false
-
-      # Check for overly permissive routes
+      # Track if non-compliant routes exist in this region
       while read -r dest_cidr peering_id; do
         if [[ -n "$peering_id" && "$peering_id" == "$PEERING_ID" ]]; then
           cidr_suffix=$(echo "$dest_cidr" | awk -F'/' '{print $2}')
           if [[ "$cidr_suffix" -le 16 ]]; then
-            non_compliant_found=true
-            ((total_non_compliant++))
+            non_compliant_found[$REGION]=1
 
-            # Print audit details
+            # Print audit details only for non-compliant entries
             echo "--------------------------------------------------"
             echo "Region: $REGION"
             echo "VPC Peering Connection: $PEERING_ID"
@@ -102,18 +95,13 @@ for REGION in "${!vpc_counts[@]}"; do
           fi
         fi
       done <<< "$routes"
-
-      # If no non-compliant routes were found
-      if ! $non_compliant_found; then
-        echo -e "${GREEN}All routes for VPC Peering $PEERING_ID in $REGION are compliant.${NC}"
-      fi
     done
+
+    # If no non-compliant routes were found, print a single compliant message
+    if [[ "${non_compliant_found[$REGION]}" -eq 0 ]]; then
+      echo -e "${GREEN}All VPC peering routes in region $REGION are compliant!${NC}"
+    fi
   fi
 done
-
-# If no non-compliant routes were found in any region
-if [[ $total_non_compliant -eq 0 ]]; then
-  echo -e "${GREEN} All VPC peering routes in all regions are compliant!${NC}"
-fi
 
 echo "Audit completed for all regions."
