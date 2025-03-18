@@ -5,7 +5,7 @@ description="AWS Approved (Golden) AMI Compliance Audit"
 criteria="This script checks whether EC2 instances were launched using an approved (golden) AMI. 
 Instances using unapproved AMIs are marked as 'Non-Compliant' (printed in red), otherwise 'Compliant' (printed in green)."
 
-# Command being used to fetch the data
+# Commands used
 command_used="Commands Used:
   1. aws ec2 describe-regions --query 'Regions[*].RegionName' --output text
   2. aws ec2 describe-instances --region \$REGION --query 'Reservations[*].Instances[*].{InstanceId:InstanceId,ImageId:ImageId}'
@@ -38,7 +38,9 @@ if ! aws configure list-profiles | grep -q "^$PROFILE$"; then
 fi
 
 # Define approved (golden) AMI IDs
-APPROVED_AMIS=("ami-0abcd1234abcd1234" "ami-01234abcd1234abcd")
+declare -A APPROVED_AMIS
+APPROVED_AMIS["ami-0abcd1234abcd1234"]=1
+APPROVED_AMIS["ami-01234abcd1234abcd"]=1
 
 # Get list of all AWS regions
 regions=$(aws ec2 describe-regions --query 'Regions[*].RegionName' --output text --profile "$PROFILE")
@@ -69,24 +71,32 @@ for REGION in "${!region_instance_count[@]}"; do
   if [ "${region_instance_count[$REGION]}" -gt 0 ]; then
     echo -e "${PURPLE}Starting audit for region: $REGION${NC}"
 
+    # Fetch instance details (InstanceId, ImageId) and process in batches of 50
     instances=$(aws ec2 describe-instances --region "$REGION" --profile "$PROFILE" \
-      --query 'Reservations[*].Instances[*].{InstanceId:InstanceId,ImageId:ImageId}' --output json)
+      --query 'Reservations[*].Instances[*].[InstanceId, ImageId]' --output text)
 
-    echo "$instances" | jq -c '.[] | .[]' | while read -r instance; do
-      instance_id=$(echo "$instance" | jq -r '.InstanceId')
-      image_id=$(echo "$instance" | jq -r '.ImageId')
+    # Initialize counters
+    compliant_count=0
+    non_compliant_count=0
 
-      echo "--------------------------------------------------"
-      echo "Instance ID: $instance_id"
-      echo "Image ID: $image_id"
-
-      # Check if the instance was launched from an approved AMI
-      if [[ " ${APPROVED_AMIS[*]} " =~ " $image_id " ]]; then
-        echo -e "Status: ${GREEN} Compliant (Golden AMI Used)${NC}"
-      else
-        echo -e "Status: ${RED} Non-Compliant (Unapproved AMI)${NC}"
+    while IFS=$'\t' read -r instance_id image_id; do
+      if [[ -z "$instance_id" || -z "$image_id" ]]; then
+        continue
       fi
-    done
+
+      # Check if AMI is approved
+      if [[ -n "${APPROVED_AMIS[$image_id]}" ]]; then
+        ((compliant_count++))
+      else
+        ((non_compliant_count++))
+      fi
+    done <<< "$instances"
+
+    # Display summary per region
+    echo "--------------------------------------------------"
+    echo "Total Instances in $REGION: ${region_instance_count[$REGION]}"
+    echo -e "Compliant (Golden AMI Used): ${GREEN}$compliant_count${NC}"
+    echo -e "Non-Compliant (Unapproved AMI): ${RED}$non_compliant_count${NC}"
     echo "--------------------------------------------------"
   fi
 done
