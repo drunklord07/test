@@ -48,16 +48,18 @@ echo "+----------------+----------------+"
 # Dictionary for storing VPC endpoint counts
 declare -A vpc_endpoint_counts
 
-# Audit each region
+# Audit each region in parallel
 for REGION in $regions; do
-  # Count VPC Endpoints
-  vpces=$(aws ec2 describe-vpc-endpoints --region "$REGION" --profile "$PROFILE" \
-    --query 'VpcEndpoints[*].VpcEndpointId' --output text)
-  vpce_count=$(echo "$vpces" | wc -w)
-  vpc_endpoint_counts[$REGION]=$vpce_count
+  (
+    vpces=$(aws ec2 describe-vpc-endpoints --region "$REGION" --profile "$PROFILE" \
+      --query 'VpcEndpoints[*].VpcEndpointId' --output text)
+    vpce_count=$(echo "$vpces" | wc -w)
+    vpc_endpoint_counts[$REGION]=$vpce_count
 
-  printf "| %-14s | %-14s |\n" "$REGION" "$vpce_count"
+    printf "| %-14s | %-18s |\n" "$REGION" "$vpce_count"
+  ) &
 done
+wait
 echo "+----------------+----------------+"
 echo ""
 
@@ -65,6 +67,7 @@ echo ""
 for REGION in "${!vpc_endpoint_counts[@]}"; do
   if [ "${vpc_endpoint_counts[$REGION]}" -gt 0 ]; then
     echo -e "${PURPLE}Starting audit for region: $REGION${NC}"
+    non_compliant_found=0
 
     for VPCE_ID in $(aws ec2 describe-vpc-endpoints --region "$REGION" --profile "$PROFILE" \
       --query 'VpcEndpoints[*].VpcEndpointId' --output text); do
@@ -75,21 +78,21 @@ for REGION in "${!vpc_endpoint_counts[@]}"; do
         --output json)
 
       # Check for open access (Principal: "*") and no Condition
-      echo "$policy_doc" | grep -q '"Principal": "*"'
-      open_principal=$?
-
-      echo "$policy_doc" | grep -q '"Condition"'
-      has_condition=$?
-
-      if [ $open_principal -eq 0 ] && [ $has_condition -ne 0 ]; then
-        STATUS="${RED}Non-Compliant (Unrestricted Access)${NC}"
+      if echo "$policy_doc" | grep -q '"Principal": "\*"' && ! echo "$policy_doc" | grep -q '"Condition"'; then
+        non_compliant_found=1
         echo "--------------------------------------------------"
         echo "Region: $REGION"
         echo "VPC Endpoint ID: $VPCE_ID"
-        echo "Status: $STATUS"
+        echo -e "Status: ${RED}Non-Compliant (Unrestricted Access)${NC}"
         echo "--------------------------------------------------"
+      else
+        echo -e "${GREEN}Region: $REGION | VPC Endpoint ID: $VPCE_ID | Status: Compliant${NC}"
       fi
     done
+
+    if [[ "$non_compliant_found" -eq 0 ]]; then
+      echo -e "${GREEN}All VPC Endpoints in region $REGION are compliant!${NC}"
+    fi
   fi
 done
 
