@@ -9,7 +9,7 @@ If an AMI is unencrypted, it is marked as 'Non-Compliant' (printed in red), othe
 command_used="Commands Used:
   1. aws ec2 describe-regions --query 'Regions[*].RegionName' --output text
   2. aws ec2 describe-images --region \$REGION --owners self --query 'Images[*].ImageId'
-  3. aws ec2 describe-images --region \$REGION --image-ids \$IMAGE_ID --query 'Images[*].BlockDeviceMappings[*].Ebs.Encrypted[]'"
+  3. aws ec2 describe-images --region \$REGION --image-ids (batch of 50) --query 'Images[*].BlockDeviceMappings[*].Ebs.Encrypted[]'"
 
 # Color codes
 GREEN='\033[0;32m'
@@ -72,7 +72,7 @@ process_amis() {
 
   for IMAGE_ID in "${IMAGE_IDS[@]}"; do
     encrypted=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" \
-      --image-ids "$IMAGE_ID" --query 'Images[*].BlockDeviceMappings[*].Ebs.Encrypted' --output text)
+      --image-ids "$IMAGE_ID" --query 'Images[*].BlockDeviceMappings[*].Ebs.Encrypted' --output text 2>/dev/null)
 
     if [[ "$encrypted" == *"False"* ]]; then
       ((non_compliant_count++))
@@ -102,6 +102,8 @@ for REGION in "${!region_ami_count[@]}"; do
 
     for ((i = 0; i < num_images; i += batch_size)); do
       batch=("${image_ids[@]:i:batch_size}")
+
+      # Run process_amis function in parallel
       result=$(process_amis "$REGION" "${batch[@]}")
 
       region_name=$(echo "$result" | awk '{print $1}')
