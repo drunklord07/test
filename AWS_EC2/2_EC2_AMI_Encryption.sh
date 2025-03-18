@@ -5,11 +5,11 @@ description="AWS AMI Encryption Audit"
 criteria="This script lists all AMIs owned by the account and checks if their snapshots are encrypted.
 If an AMI is unencrypted, it is marked as 'Non-Compliant' (printed in red), otherwise 'Compliant' (printed in green)."
 
-# Command being used to fetch the data
+# Commands used
 command_used="Commands Used:
   1. aws ec2 describe-regions --query 'Regions[*].RegionName' --output text
   2. aws ec2 describe-images --region \$REGION --owners self --query 'Images[*].ImageId'
-  3. aws ec2 describe-images --region \$REGION --image-ids (batch of 50) --query 'Images[*].BlockDeviceMappings[*].Ebs.Encrypted[]'"
+  3. aws ec2 describe-images --region \$REGION --image-ids \$IMAGE_ID --query 'Images[*].BlockDeviceMappings[*].Ebs.Encrypted[]'"
 
 # Color codes
 GREEN='\033[0;32m'
@@ -45,11 +45,11 @@ echo "\n+----------------+-----------------+"
 echo "| Region        | Total AMIs       |"
 echo "+----------------+-----------------+"
 
+# Loop through each region and count AMIs
 declare -A region_ami_count
-
-# Fetch AMI count for each region
 for REGION in $regions; do
-  ami_count=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self --query 'length(Images)' --output text)
+  ami_count=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self \
+    --query 'length(Images)' --output text)
 
   if [ "$ami_count" == "None" ]; then
     ami_count=0
@@ -61,68 +61,50 @@ done
 echo "+----------------+-----------------+"
 echo ""
 
-# Function to process AMIs in batches
-process_amis() {
-  local REGION="$1"
-  shift
-  local IMAGE_IDS=("$@")
-
-  local compliant_count=0
-  local non_compliant_count=0
-
-  # Get encryption status for the batch
-  encrypted_status=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" \
-    --image-ids "${IMAGE_IDS[@]}" --query 'Images[*].BlockDeviceMappings[*].Ebs.Encrypted' --output text 2>/dev/null)
-
-  # Convert encryption status into an array
-  IFS=$'\n' read -r -d '' -a encryption_array <<<"$encrypted_status"
-
-  for status in "${encryption_array[@]}"; do
-    if [[ "$status" == "True" ]]; then
-      ((compliant_count++))
-    elif [[ "$status" == "False" ]]; then
-      ((non_compliant_count++))
-    fi
-  done
-
-  echo "$REGION $compliant_count $non_compliant_count"
-}
-
-# Audit AMIs in each region
+# Audit only regions with AMIs
 for REGION in "${!region_ami_count[@]}"; do
   if [ "${region_ami_count[$REGION]}" -gt 0 ]; then
     echo -e "${PURPLE}Starting audit for region: $REGION${NC}"
 
-    # Get all AMI IDs for the region
-    mapfile -t image_ids < <(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self --query 'Images[*].ImageId' --output text)
+    # Get list of all AMI IDs in the region
+    images=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self \
+      --query 'Images[*].ImageId' --output text)
 
-    # Initialize compliance counts
-    total_compliant=0
-    total_non_compliant=0
+    # Initialize counters
+    compliant_count=0
+    non_compliant_count=0
 
-    # Process AMIs in batches of 50
+    # Process in batches of 50
     batch_size=50
-    num_images=${#image_ids[@]}
+    batch=()
 
-    for ((i = 0; i < num_images; i += batch_size)); do
-      batch=("${image_ids[@]:i:batch_size}")
+    for image_id in $images; do
+      batch+=("$image_id")
 
-      # Run process_amis function in parallel
-      result=$(process_amis "$REGION" "${batch[@]}")
+      # If batch size is reached or it's the last batch, process them
+      if [[ "${#batch[@]}" -eq "$batch_size" || "$image_id" == "$(echo "$images" | tail -n 1)" ]]; then
+        # Describe images in batch
+        result=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --image-ids "${batch[@]}" \
+          --query 'Images[*].BlockDeviceMappings[*].Ebs.Encrypted' --output text)
 
-      region_name=$(echo "$result" | awk '{print $1}')
-      compliant=$(echo "$result" | awk '{print $2}')
-      non_compliant=$(echo "$result" | awk '{print $3}')
+        for encrypted in $result; do
+          if [[ "$encrypted" == "True" ]]; then
+            ((compliant_count++))
+          else
+            ((non_compliant_count++))
+          fi
+        done
 
-      ((total_compliant += compliant))
-      ((total_non_compliant += non_compliant))
+        # Clear batch
+        batch=()
+      fi
     done
 
-    # Display summary
+    # Display results
     echo "--------------------------------------------------"
-    echo "Region: $REGION"
-    echo -e "Compliant AMIs: ${GREEN}$total_compliant${NC}"
-    echo -e "Non-Compliant AMIs: ${RED}$total_non_compliant${NC}"
+    echo "Total AMIs in $REGION: ${region_ami_count[$REGION]}"
+    echo -e "Compliant (Encrypted): ${GREEN}$compliant_count${NC}"
+    echo -e "Non-Compliant (Not Encrypted): ${RED}$non_compliant_count${NC}"
     echo "--------------------------------------------------"
   fi
 done
