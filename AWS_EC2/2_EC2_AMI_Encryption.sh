@@ -70,14 +70,18 @@ process_amis() {
   local compliant_count=0
   local non_compliant_count=0
 
-  for IMAGE_ID in "${IMAGE_IDS[@]}"; do
-    encrypted=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" \
-      --image-ids "$IMAGE_ID" --query 'Images[*].BlockDeviceMappings[*].Ebs.Encrypted' --output text 2>/dev/null)
+  # Get encryption status for the batch
+  encrypted_status=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" \
+    --image-ids "${IMAGE_IDS[@]}" --query 'Images[*].BlockDeviceMappings[*].Ebs.Encrypted' --output text 2>/dev/null)
 
-    if [[ "$encrypted" == *"False"* ]]; then
-      ((non_compliant_count++))
-    else
+  # Convert encryption status into an array
+  IFS=$'\n' read -r -d '' -a encryption_array <<<"$encrypted_status"
+
+  for status in "${encryption_array[@]}"; do
+    if [[ "$status" == "True" ]]; then
       ((compliant_count++))
+    elif [[ "$status" == "False" ]]; then
+      ((non_compliant_count++))
     fi
   done
 
