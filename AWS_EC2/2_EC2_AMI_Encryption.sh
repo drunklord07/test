@@ -69,11 +69,15 @@ for REGION in "${!region_ami_count[@]}"; do
     non_compliant_count=0
 
     images=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" --owners self \
-      --query 'Images[*].[ImageId]' --output text)
+      --query 'Images[*].ImageId' --output text)
+
+    if [ -z "$images" ]; then
+      continue # Skip if no AMIs exist
+    fi
 
     while read -r image_id; do
-      if [[ -z "$image_id" ]]; then
-        continue
+      if [[ -z "$image_id" || "$image_id" == "None" ]]; then
+        continue # Skip invalid AMI IDs
       fi
 
       encrypted=$(aws ec2 describe-images --region "$REGION" --profile "$PROFILE" \
