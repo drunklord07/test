@@ -51,18 +51,19 @@ fi
 echo -e "${PURPLE}Total S3 Buckets: ${GREEN}$total_buckets${NC}"
 echo "----------------------------------------------------------"
 
-# Audit S3 Server Access Logging with Parallel Execution
-non_compliant_buckets=()
-lock_file="/tmp/s3_logging_audit_lock"
+# Audit S3 Server Access Logging
+non_compliant_logging=0
+non_compliant_acl=0
+compliant_buckets=0
 
 check_logging() {
   bucket="$1"
 
   # Check if Server Access Logging is enabled
   logging_target=$(aws s3api get-bucket-logging --profile "$PROFILE" --bucket "$bucket" --query 'LoggingEnabled.TargetBucket' --output text 2>/dev/null)
-  
+
   if [ -z "$logging_target" ] || [ "$logging_target" == "None" ]; then
-    echo "$bucket|Logging Not Enabled" >> "$lock_file"
+    ((non_compliant_logging++))
     return
   fi
 
@@ -70,12 +71,11 @@ check_logging() {
   acl_permission=$(aws s3api get-bucket-acl --profile "$PROFILE" --bucket "$bucket" --query 'Grants[?(Grantee.URI==`http://acs.amazonaws.com/groups/s3/LogDelivery`)].Permission' --output text 2>/dev/null)
 
   if [[ "$acl_permission" != *"WRITE"* ]]; then
-    echo "$bucket|Logging Enabled but Missing WRITE Permission" >> "$lock_file"
+    ((non_compliant_acl++))
+  else
+    ((compliant_buckets++))
   fi
 }
-
-# Cleanup lock file if exists
-> "$lock_file"
 
 # Run checks in parallel
 for bucket in $buckets; do
@@ -90,32 +90,20 @@ done
 # Wait for all background processes to finish
 wait
 
-# Read non-compliant buckets from the lock file
-mapfile -t non_compliant_buckets < "$lock_file"
-rm -f "$lock_file"
+# Calculate total non-compliant buckets
+total_non_compliant=$((non_compliant_logging + non_compliant_acl))
 
-# Display Non-Compliant Buckets
-non_compliant_count=${#non_compliant_buckets[@]}
-
+# Display audit summary table
 echo ""
-echo -e "${PURPLE}Total Non-Compliant Buckets: ${RED}$non_compliant_count${NC}"
 echo "----------------------------------------------------------"
-
-if [ "$non_compliant_count" -gt 0 ]; then
-  printf "%-40s %-40s\n" "Bucket Name" "Reason for Non-Compliance"
-  echo "---------------------------------------------------------------------------------------------"
-  
-  for entry in "${non_compliant_buckets[@]}"; do
-    bucket_name=$(echo "$entry" | cut -d '|' -f1)
-    bucket_reason=$(echo "$entry" | cut -d '|' -f2)
-
-    printf "%-40s %-40s\n" "$bucket_name" "$bucket_reason"
-  done
-
-  echo "---------------------------------------------------------------------------------------------"
-else
-  echo -e "${GREEN}All S3 buckets have proper logging configuration.${NC}"
-fi
+echo -e "${PURPLE}S3 Server Access Logging Audit Summary:${NC}"
+echo "----------------------------------------------------------"
+printf "%-30s %-15s %-40s\n" "Status" "No. of Buckets" "Reason"
+echo "---------------------------------------------------------------------------------------------"
+printf "${GREEN}%-30s${NC} %-15s %-40s\n" "Compliant" "$compliant_buckets" "Proper logging configuration"
+printf "${RED}%-30s${NC} %-15s %-40s\n" "Non-Compliant" "$non_compliant_logging" "Logging Not Enabled"
+printf "${RED}%-30s${NC} %-15s %-40s\n" "Non-Compliant" "$non_compliant_acl" "Log Delivery Group Missing WRITE Permission"
+echo "---------------------------------------------------------------------------------------------"
 
 echo ""
 echo -e "${GREEN}Audit completed.${NC}"
