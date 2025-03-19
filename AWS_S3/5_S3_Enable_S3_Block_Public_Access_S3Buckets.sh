@@ -11,17 +11,15 @@ command_used="Commands Used:
 
 # Color codes
 GREEN='\033[0;32m'
-PURPLE='\033[0;35m'
 RED='\033[0;31m'
+PURPLE='\033[0;35m'
 NC='\033[0m'  # No color
 
 # Display script metadata
 echo ""
 echo "----------------------------------------------------------"
 echo -e "${PURPLE}Description: $description${NC}"
-echo ""
 echo -e "${PURPLE}Criteria: $criteria${NC}"
-echo ""
 echo -e "${PURPLE}$command_used${NC}"
 echo "----------------------------------------------------------"
 echo ""
@@ -35,41 +33,81 @@ if ! aws configure list-profiles | grep -q "^$PROFILE$"; then
   exit 1
 fi
 
-# Get total number of S3 buckets
-TOTAL_BUCKETS=$(aws s3api list-buckets --profile "$PROFILE" --query 'Buckets[*].Name' --output json | jq length)
+# Fetch all S3 bucket names
+echo -e "${GREEN}Retrieving list of S3 buckets...${NC}"
+buckets=$(aws s3api list-buckets --query 'Buckets[*].Name' --profile "$PROFILE" --output text)
 
-if [ -z "$TOTAL_BUCKETS" ]; then
-  echo -e "${RED}ERROR: Unable to retrieve S3 bucket count.${NC}"
-  exit 1
+# Count total buckets
+total_buckets=$(echo "$buckets" | wc -w)
+
+if [ "$total_buckets" -eq 0 ]; then
+  echo -e "${RED}No S3 buckets found in this AWS account.${NC}"
+  exit 0
 fi
 
-echo -e "${GREEN}Total number of S3 buckets in AWS account: $TOTAL_BUCKETS${NC}"
-echo ""
+echo -e "${PURPLE}Total S3 Buckets: ${GREEN}$total_buckets${NC}"
+echo "----------------------------------------------------------"
 
-# Check S3 Block Public Access settings for each bucket
-NON_COMPLIANT_BUCKETS=()
-BUCKETS=$(aws s3api list-buckets --profile "$PROFILE" --query 'Buckets[*].Name' --output text)
+# Audit S3 Block Public Access settings
+compliant_count=0
+non_compliant_count=0
+lock_file="/tmp/s3_block_public_access_audit_lock"
 
-for BUCKET in $BUCKETS; do
-  OUTPUT=$(aws s3api get-public-access-block --profile "$PROFILE" --bucket "$BUCKET" --query 'PublicAccessBlockConfiguration' --output json 2>&1)
+# Clear lock file
+> "$lock_file"
 
-  if echo "$OUTPUT" | grep -q "NoSuchPublicAccessBlockConfiguration"; then
-    NON_COMPLIANT_BUCKETS+=("$BUCKET")
+check_public_access_block() {
+  bucket="$1"
+
+  # Get Public Access Block settings
+  access_block_output=$(aws s3api get-public-access-block --bucket "$bucket" --profile "$PROFILE" --query 'PublicAccessBlockConfiguration' --output json 2>&1)
+
+  if echo "$access_block_output" | grep -q "NoSuchPublicAccessBlockConfiguration"; then
+    echo "$bucket|No Public Access Block" >> "$lock_file"
+  else
+    echo "$bucket|Compliant" >> "$lock_file"
   fi
+}
+
+# Run checks in parallel
+for bucket in $buckets; do
+  check_public_access_block "$bucket" &
+  
+  # Limit parallel jobs to prevent AWS API throttling
+  while [ "$(jobs -r | wc -l)" -ge 10 ]; do
+    sleep 1
+  done
 done
 
+# Wait for all background processes to finish
+wait
+
+# Read results from lock file
+while IFS= read -r entry; do
+  bucket_name=$(echo "$entry" | cut -d '|' -f1)
+  reason=$(echo "$entry" | cut -d '|' -f2)
+
+  case "$reason" in
+    "No Public Access Block")
+      ((non_compliant_count++))
+      ;;
+    "Compliant")
+      ((compliant_count++))
+      ;;
+  esac
+done < "$lock_file"
+rm -f "$lock_file"
+
 # Display Audit Summary
+echo ""
 echo "----------------------------------------------------------"
-echo -e "${GREEN}Audit Summary:${NC}"
+echo -e "                      ${PURPLE}Audit Summary${NC}"
 echo "----------------------------------------------------------"
-echo -e "${GREEN}Total S3 Buckets: $TOTAL_BUCKETS${NC}"
-if [ ${#NON_COMPLIANT_BUCKETS[@]} -eq 0 ]; then
-  echo -e "${GREEN}All S3 buckets have Public Access Block enabled.${NC}"
-else
-  echo -e "${RED}Non-Compliant S3 Buckets (No Public Access Block):${NC}"
-  for BUCKET in "${NON_COMPLIANT_BUCKETS[@]}"; do
-    echo -e "${RED}- $BUCKET${NC}"
-  done
-fi
-echo "----------------------------------------------------------"
+printf "%-30s %-15s %-40s\n" "Status" "Bucket Count" "Reason"
+echo "-------------------------------------------------------------------------------"
+printf "${GREEN}%-30s${NC} %-15s %-40s\n" "Compliant" "$compliant_count" "Public Access Block Enabled"
+printf "${RED}%-30s${NC} %-15s %-40s\n" "Non-Compliant" "$non_compliant_count" "No Public Access Block Configured"
+echo "-------------------------------------------------------------------------------"
+
+echo ""
 echo -e "${GREEN}Audit completed.${NC}"
