@@ -7,8 +7,8 @@ criteria="This script identifies VPCs that do not have any associated VPC endpoi
 # Commands used
 command_used="Commands Used:
   1. aws ec2 describe-regions --query 'Regions[*].RegionName' --output text
-  2. aws ec2 describe-vpcs --region \$REGION --query 'Vpcs[*].VpcId'
-  3. aws ec2 describe-vpc-endpoints --region \$REGION --filters Name=vpc-id,Values=\$VPC_ID --query 'VpcEndpoints[*].VpcEndpointId'"
+  2. aws ec2 describe-vpcs --region REGION --query 'Vpcs[*].VpcId'
+  3. aws ec2 describe-vpc-endpoints --region REGION --filters Name=vpc-id,Values=VPC_ID --query 'VpcEndpoints[*].VpcEndpointId'"
 
 # Color codes
 GREEN='\033[0;32m'
@@ -50,39 +50,40 @@ declare -A vpc_counts
 
 # Audit each region
 for REGION in $regions; do
-  # Count VPCs
-  vpcs=$(aws ec2 describe-vpcs --region "$REGION" --profile "$PROFILE" \
-    --query 'Vpcs[*].VpcId' --output text)
+  vpcs=$(aws ec2 describe-vpcs --region "$REGION" --profile "$PROFILE" --query 'Vpcs[*].VpcId' --output text)
   vpc_count=$(echo "$vpcs" | wc -w)
-  vpc_counts[$REGION]=$vpc_count
+  vpc_counts["$REGION"]=$vpc_count
 
   printf "| %-14s | %-14s |\n" "$REGION" "$vpc_count"
 done
 echo "+----------------+----------------+"
 echo ""
 
-# Audit each VPC for associated VPC Endpoints
+# Audit each VPC for compliance
 for REGION in "${!vpc_counts[@]}"; do
   if [ "${vpc_counts[$REGION]}" -gt 0 ]; then
     echo -e "${PURPLE}Starting audit for region: $REGION${NC}"
+    non_compliant_found=0
 
-    for VPC_ID in $(aws ec2 describe-vpcs --region "$REGION" --profile "$PROFILE" \
-      --query 'Vpcs[*].VpcId' --output text); do
-
+    for VPC_ID in $(aws ec2 describe-vpcs --region "$REGION" --profile "$PROFILE" --query 'Vpcs[*].VpcId' --output text); do
       # Get VPC Endpoint count
-      vpce_list=$(aws ec2 describe-vpc-endpoints --region "$REGION" --profile "$PROFILE" \
-        --filters Name=vpc-id,Values="$VPC_ID" --query 'VpcEndpoints[*].VpcEndpointId' \
-        --output text)
+      vpce_list=$(aws ec2 describe-vpc-endpoints --region "$REGION" --profile "$PROFILE" --filters Name=vpc-id,Values="$VPC_ID" --query 'VpcEndpoints[*].VpcEndpointId' --output text)
 
       if [ -z "$vpce_list" ]; then
-        STATUS="${RED}Non-Compliant (No VPC Endpoints)${NC}"
+        non_compliant_found=1
         echo "--------------------------------------------------"
         echo "Region: $REGION"
         echo "VPC ID: $VPC_ID"
-        echo "Status: $STATUS"
+        echo -e "Status: ${RED}Non-Compliant (No VPC Endpoints)${NC}"
         echo "--------------------------------------------------"
+      else
+        echo -e "${GREEN}Region: $REGION | VPC ID: $VPC_ID | Status: Compliant${NC}"
       fi
     done
+
+    if [[ "$non_compliant_found" -eq 0 ]]; then
+      echo -e "${GREEN}All VPCs in region $REGION are compliant!${NC}"
+    fi
   fi
 done
 
