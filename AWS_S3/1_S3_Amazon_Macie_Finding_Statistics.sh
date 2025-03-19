@@ -6,7 +6,7 @@ criteria="This script checks for Macie security findings across all AWS regions,
 
 # Commands used
 command_used="Commands Used:
-  1. aws ec2 describe-regions
+  1. aws configure list-profiles
   2. aws s3api list-buckets
   3. aws macie2 get-finding-statistics
   4. aws macie2 list-findings"
@@ -28,8 +28,17 @@ echo -e "${PURPLE}$command_used${NC}"
 echo "----------------------------------------------------------"
 echo ""
 
-# Get all AWS regions
-regions=$(aws ec2 describe-regions --query 'Regions[*].RegionName' --output text)
+# Set AWS CLI profile
+PROFILE="my-role"
+
+# Validate if the profile exists
+if ! aws configure list-profiles | grep -q "^$PROFILE$"; then
+  echo "ERROR: AWS profile '$PROFILE' does not exist."
+  exit 1
+fi
+
+# Get all AWS regions (without describe-regions)
+regions=$(aws s3api list-buckets --query 'Buckets[*].{Region:LocationConstraint}' --output text --profile "$PROFILE" | sort -u)
 
 # Header for summary table
 echo "----------------------------------------------------------"
@@ -41,7 +50,7 @@ echo "----------------------------------------------------------"
 # Iterate through each region
 declare -A bucket_count
 for region in $regions; do
-    total_buckets=$(aws s3api list-buckets --query 'Buckets[*].Name' --output text --region "$region" | wc -w)
+    total_buckets=$(aws s3api list-buckets --query 'Buckets[*].Name' --output text --region "$region" --profile "$PROFILE" | wc -w)
     bucket_count[$region]=$total_buckets
     printf "%-20s %-10s \n" "$region" "$total_buckets"
 done
@@ -54,7 +63,7 @@ echo -e "${PURPLE}Audit: Non-Compliant S3 Buckets with Macie Findings${NC}"
 echo "----------------------------------------------------------"
 
 for region in $regions; do
-    findings_output=$(aws macie2 get-finding-statistics --group-by resourcesAffected.s3Bucket.name --region "$region" --query 'countsByGroup[*]' --output text 2>/dev/null)
+    findings_output=$(aws macie2 get-finding-statistics --group-by resourcesAffected.s3Bucket.name --region "$region" --profile "$PROFILE" --query 'countsByGroup[*]' --output text 2>/dev/null)
     
     if [[ -z "$findings_output" ]]; then
         continue
@@ -66,7 +75,7 @@ for region in $regions; do
         echo -e "${RED}Non-Compliant Bucket: $bucket_name (Findings: $count)${NC}"
         
         # Get finding types for the bucket
-        finding_types_output=$(aws macie2 get-finding-statistics --group-by type --finding-criteria criterion={resourcesAffected.s3Bucket.name={eq="$bucket_name"}} --region "$region" --query 'countsByGroup[*]' --output text 2>/dev/null)
+        finding_types_output=$(aws macie2 get-finding-statistics --group-by type --finding-criteria criterion={resourcesAffected.s3Bucket.name={eq="$bucket_name"}} --region "$region" --profile "$PROFILE" --query 'countsByGroup[*]' --output text 2>/dev/null)
         
         if [[ -n "$finding_types_output" ]]; then
             echo "  Security Finding Types:"
@@ -76,7 +85,7 @@ for region in $regions; do
         fi
 
         # Get finding IDs for the bucket
-        finding_ids=$(aws macie2 list-findings --finding-criteria criterion={resourcesAffected.s3Bucket.name={eq="$bucket_name"}} --region "$region" --query 'FindingIds[*]' --output text 2>/dev/null)
+        finding_ids=$(aws macie2 list-findings --finding-criteria criterion={resourcesAffected.s3Bucket.name={eq="$bucket_name"}} --region "$region" --profile "$PROFILE" --query 'FindingIds[*]' --output text 2>/dev/null)
         
         if [[ -n "$finding_ids" ]]; then
             echo "  Finding IDs:"
