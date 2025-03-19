@@ -37,29 +37,23 @@ fi
 
 # Fetch all S3 bucket names
 echo -e "${GREEN}Retrieving list of S3 buckets...${NC}"
-bucket_list=$(aws s3api list-buckets --query 'Buckets[*].Name' --profile "$PROFILE" --output text)
+buckets=$(aws s3api list-buckets --query 'Buckets[*].Name' --profile "$PROFILE" --output text)
 
-if [ -z "$bucket_list" ]; then
+# Count total buckets
+total_buckets=$(echo "$buckets" | wc -w)
+
+if [ "$total_buckets" -eq 0 ]; then
   echo -e "${RED}No S3 buckets found in this AWS account.${NC}"
   exit 0
 fi
 
-# Display all S3 buckets
-echo ""
+echo -e "${PURPLE}Total S3 Buckets: ${GREEN}$total_buckets${NC}"
 echo "----------------------------------------------------------"
-echo -e "${PURPLE}List of S3 Buckets:${NC}"
-echo "----------------------------------------------------------"
-for bucket in $bucket_list; do
-  echo "$bucket"
-done
-echo "----------------------------------------------------------"
-echo ""
 
-# Check bucket ownership settings
-non_compliant_buckets=()
-
-echo -e "${GREEN}Checking S3 Object Ownership settings for each bucket...${NC}"
-for bucket in $bucket_list; do
+# Audit S3 Bucket Ownership Settings (Parallel Execution)
+declare -a non_compliant_buckets
+check_ownership() {
+  bucket="$1"
   ownership_output=$(aws s3api get-bucket-ownership-controls --bucket "$bucket" --profile "$PROFILE" --query 'OwnershipControls.Rules[*].ObjectOwnership' --output text 2>&1)
 
   if echo "$ownership_output" | grep -q "OwnershipControlsNotFoundError"; then
@@ -67,7 +61,13 @@ for bucket in $bucket_list; do
   elif echo "$ownership_output" | grep -q "ObjectWriter"; then
     non_compliant_buckets+=("$bucket (Object Ownership: ObjectWriter)")
   fi
-done
+}
+
+export -f check_ownership
+export PROFILE
+
+# Run in parallel for faster execution
+echo "$buckets" | xargs -n 1 -P 10 -I {} bash -c 'check_ownership "{}"'
 
 # Display Non-Compliant Buckets
 if [ ${#non_compliant_buckets[@]} -gt 0 ]; then
