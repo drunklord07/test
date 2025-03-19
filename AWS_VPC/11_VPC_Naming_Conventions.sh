@@ -7,8 +7,8 @@ criteria="This script checks if VPCs follow a naming convention as per AWS best 
 # Commands used
 command_used="Commands Used:
   1. aws ec2 describe-regions --query 'Regions[*].RegionName' --output text
-  2. aws ec2 describe-vpcs --region \$REGION --query 'Vpcs[*].VpcId'
-  3. aws ec2 describe-vpcs --region \$REGION --vpc-ids \$VPC_ID --query 'Vpcs[*].Tags'"
+  2. aws ec2 describe-vpcs --region REGION --query 'Vpcs[*].VpcId'
+  3. aws ec2 describe-vpcs --region REGION --vpc-ids VPC_ID --query 'Vpcs[*].Tags'"
 
 # Define the regex pattern (modify as needed)
 naming_pattern="^vpc-(ue1|uw1|uw2|ew1|ec1|an1|an2|as1|as2|se1)-(d|t|s|p)-([a-z0-9\-]+)$"
@@ -57,12 +57,15 @@ for REGION in $regions; do
   vpcs=$(aws ec2 describe-vpcs --region "$REGION" --profile "$PROFILE" \
     --query 'Vpcs[*].VpcId' --output text)
   vpc_count=$(echo "$vpcs" | wc -w)
-  vpc_counts[$REGION]=$vpc_count
+  vpc_counts["$REGION"]=$vpc_count
 
   printf "| %-14s | %-14s |\n" "$REGION" "$vpc_count"
 done
 echo "+----------------+----------------+"
 echo ""
+
+# Track compliance status
+non_compliant_found=0
 
 # Audit each VPC for Naming Convention
 for REGION in "${!vpc_counts[@]}"; do
@@ -78,8 +81,10 @@ for REGION in "${!vpc_counts[@]}"; do
 
       if [[ -z "$vpc_name" ]]; then
         STATUS="${RED}Non-Compliant (No Name Tag)${NC}"
+        non_compliant_found=1
       elif [[ ! "$vpc_name" =~ $naming_pattern ]]; then
         STATUS="${RED}Non-Compliant (Invalid Naming Pattern)${NC}"
+        non_compliant_found=1
       else
         STATUS="${GREEN}Compliant${NC}"
       fi
@@ -88,10 +93,14 @@ for REGION in "${!vpc_counts[@]}"; do
       echo "Region: $REGION"
       echo "VPC ID: $VPC_ID"
       echo "VPC Name: $vpc_name"
-      echo "Status: $STATUS"
+      echo -e "Status: $STATUS"
       echo "--------------------------------------------------"
     done
   fi
 done
+
+if [[ "$non_compliant_found" -eq 0 ]]; then
+  echo -e "${GREEN}All VPCs follow the correct naming convention.${NC}"
+fi
 
 echo "Audit completed for all regions."
