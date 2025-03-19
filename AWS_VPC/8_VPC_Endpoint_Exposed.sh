@@ -7,8 +7,8 @@ criteria="This script identifies VPC endpoints with policies allowing access to 
 # Commands used
 command_used="Commands Used:
   1. aws ec2 describe-regions --query 'Regions[*].RegionName' --output text
-  2. aws ec2 describe-vpc-endpoints --region \$REGION --query 'VpcEndpoints[*].VpcEndpointId'
-  3. aws ec2 describe-vpc-endpoints --region \$REGION --vpc-endpoint-ids \$VPCE_ID --query 'VpcEndpoints[*].PolicyDocument'"
+  2. aws ec2 describe-vpc-endpoints --region REGION --query 'VpcEndpoints[*].VpcEndpointId'
+  3. aws ec2 describe-vpc-endpoints --region REGION --vpc-endpoint-ids VPCE_ID --query 'VpcEndpoints[*].PolicyDocument'"
 
 # Color codes
 GREEN='\033[0;32m'
@@ -48,18 +48,14 @@ echo "+----------------+----------------+"
 # Dictionary for storing VPC endpoint counts
 declare -A vpc_endpoint_counts
 
-# Audit each region in parallel
+# Audit each region
 for REGION in $regions; do
-  (
-    vpces=$(aws ec2 describe-vpc-endpoints --region "$REGION" --profile "$PROFILE" \
-      --query 'VpcEndpoints[*].VpcEndpointId' --output text)
-    vpce_count=$(echo "$vpces" | wc -w)
-    vpc_endpoint_counts[$REGION]=$vpce_count
+  vpces=$(aws ec2 describe-vpc-endpoints --region "$REGION" --profile "$PROFILE" --query 'VpcEndpoints[*].VpcEndpointId' --output text)
+  vpce_count=$(echo "$vpces" | wc -w)
+  vpc_endpoint_counts["$REGION"]=$vpce_count
 
-    printf "| %-14s | %-18s |\n" "$REGION" "$vpce_count"
-  ) &
+  printf "| %-14s | %-18s |\n" "$REGION" "$vpce_count"
 done
-wait
 echo "+----------------+----------------+"
 echo ""
 
@@ -69,22 +65,25 @@ for REGION in "${!vpc_endpoint_counts[@]}"; do
     echo -e "${PURPLE}Starting audit for region: $REGION${NC}"
     non_compliant_found=0
 
-    for VPCE_ID in $(aws ec2 describe-vpc-endpoints --region "$REGION" --profile "$PROFILE" \
-      --query 'VpcEndpoints[*].VpcEndpointId' --output text); do
-
+    for VPCE_ID in $(aws ec2 describe-vpc-endpoints --region "$REGION" --profile "$PROFILE" --query 'VpcEndpoints[*].VpcEndpointId' --output text); do
       # Get VPC Endpoint policy document
-      policy_doc=$(aws ec2 describe-vpc-endpoints --region "$REGION" --profile "$PROFILE" \
-        --vpc-endpoint-ids "$VPCE_ID" --query 'VpcEndpoints[*].PolicyDocument' \
-        --output json)
+      policy_doc=$(aws ec2 describe-vpc-endpoints --region "$REGION" --profile "$PROFILE" --vpc-endpoint-ids "$VPCE_ID" --query 'VpcEndpoints[*].PolicyDocument' --output text 2>/dev/null)
+
+      # Check if policy_doc is empty or null
+      if [ -z "$policy_doc" ] || [ "$policy_doc" == "null" ]; then
+        continue
+      fi
 
       # Check for open access (Principal: "*") and no Condition
-      if echo "$policy_doc" | grep -q '"Principal": "\*"' && ! echo "$policy_doc" | grep -q '"Condition"'; then
-        non_compliant_found=1
-        echo "--------------------------------------------------"
-        echo "Region: $REGION"
-        echo "VPC Endpoint ID: $VPCE_ID"
-        echo -e "Status: ${RED}Non-Compliant (Unrestricted Access)${NC}"
-        echo "--------------------------------------------------"
+      if echo "$policy_doc" | grep -q '"Principal"[[:space:]]*:[[:space:]]*"\*"'; then
+        if ! echo "$policy_doc" | grep -q '"Condition"'; then
+          non_compliant_found=1
+          echo "--------------------------------------------------"
+          echo "Region: $REGION"
+          echo "VPC Endpoint ID: $VPCE_ID"
+          echo -e "Status: ${RED}Non-Compliant (Unrestricted Access)${NC}"
+          echo "--------------------------------------------------"
+        fi
       else
         echo -e "${GREEN}Region: $REGION | VPC Endpoint ID: $VPCE_ID | Status: Compliant${NC}"
       fi
