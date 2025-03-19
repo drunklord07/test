@@ -56,12 +56,14 @@ lock_file="/tmp/s3_audit_lock"
 
 check_ownership() {
   bucket="$1"
+
+  # Check ownership settings
   ownership_output=$(aws s3api get-bucket-ownership-controls --bucket "$bucket" --profile "$PROFILE" --query 'OwnershipControls.Rules[*].ObjectOwnership' --output text 2>&1)
 
   if echo "$ownership_output" | grep -q "OwnershipControlsNotFoundError"; then
-    echo "$bucket (Ownership Controls Not Configured)" >> "$lock_file"
+    echo "$bucket|Ownership Controls Not Configured" >> "$lock_file"
   elif echo "$ownership_output" | grep -q "ObjectWriter"; then
-    echo "$bucket (Object Ownership: ObjectWriter)" >> "$lock_file"
+    echo "$bucket|Object Ownership: ObjectWriter" >> "$lock_file"
   fi
 }
 
@@ -86,15 +88,24 @@ mapfile -t non_compliant_buckets < "$lock_file"
 rm -f "$lock_file"
 
 # Display Non-Compliant Buckets
-if [ ${#non_compliant_buckets[@]} -gt 0 ]; then
-  echo ""
-  echo "----------------------------------------------------------"
-  echo -e "${RED}Non-Compliant S3 Buckets (Object Ownership Not Configured Properly):${NC}"
-  echo "----------------------------------------------------------"
-  for bucket in "${non_compliant_buckets[@]}"; do
-    echo -e "${RED}$bucket${NC}"
+non_compliant_count=${#non_compliant_buckets[@]}
+
+echo ""
+echo -e "${PURPLE}Total Non-Compliant Buckets: ${RED}$non_compliant_count${NC}"
+echo "----------------------------------------------------------"
+
+if [ "$non_compliant_count" -gt 0 ]; then
+  printf "%-40s %-40s\n" "Bucket Name" "Reason for Non-Compliance"
+  echo "---------------------------------------------------------------------------------------------"
+  
+  for entry in "${non_compliant_buckets[@]}"; do
+    bucket_name=$(echo "$entry" | cut -d '|' -f1)
+    bucket_reason=$(echo "$entry" | cut -d '|' -f2)
+
+    printf "%-40s %-40s\n" "$bucket_name" "$bucket_reason"
   done
-  echo "----------------------------------------------------------"
+
+  echo "---------------------------------------------------------------------------------------------"
 else
   echo -e "${GREEN}All S3 buckets have proper ownership controls configured.${NC}"
 fi
