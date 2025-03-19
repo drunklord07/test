@@ -52,22 +52,23 @@ echo "----------------------------------------------------------"
 compliant_count=0
 ownership_not_configured_count=0
 object_writer_count=0
-
 lock_file="/tmp/s3_audit_lock"
+
+# Clear lock file
 > "$lock_file"
 
 check_ownership() {
   bucket="$1"
 
-  # Check ownership settings
+  # Get ownership settings
   ownership_output=$(aws s3api get-bucket-ownership-controls --bucket "$bucket" --profile "$PROFILE" --query 'OwnershipControls.Rules[*].ObjectOwnership' --output text 2>&1)
 
   if echo "$ownership_output" | grep -q "OwnershipControlsNotFoundError"; then
-    echo "Ownership Controls Not Configured" >> "$lock_file"
+    echo "$bucket|Ownership Controls Not Configured" >> "$lock_file"
   elif echo "$ownership_output" | grep -q "ObjectWriter"; then
-    echo "Object Ownership: ObjectWriter" >> "$lock_file"
+    echo "$bucket|Object Ownership: ObjectWriter" >> "$lock_file"
   else
-    ((compliant_count++))
+    echo "$bucket|Compliant" >> "$lock_file"
   fi
 }
 
@@ -84,8 +85,11 @@ done
 # Wait for all background processes to finish
 wait
 
-# Read non-compliant buckets from the lock file and count issues
-while IFS= read -r reason; do
+# Read results from lock file
+while IFS= read -r entry; do
+  bucket_name=$(echo "$entry" | cut -d '|' -f1)
+  reason=$(echo "$entry" | cut -d '|' -f2)
+
   case "$reason" in
     "Ownership Controls Not Configured")
       ((ownership_not_configured_count++))
@@ -93,11 +97,14 @@ while IFS= read -r reason; do
     "Object Ownership: ObjectWriter")
       ((object_writer_count++))
       ;;
+    "Compliant")
+      ((compliant_count++))
+      ;;
   esac
 done < "$lock_file"
 rm -f "$lock_file"
 
-# Calculate non-compliant count
+# Calculate total non-compliant count
 non_compliant_count=$((ownership_not_configured_count + object_writer_count))
 
 # Display Audit Summary
