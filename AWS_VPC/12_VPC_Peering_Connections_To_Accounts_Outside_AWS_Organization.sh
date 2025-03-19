@@ -8,13 +8,14 @@ criteria="This script identifies VPC peering connections between AWS accounts in
 command_used="Commands Used:
   1. aws organizations list-accounts --query 'Accounts[*].Id' --output text
   2. aws ec2 describe-regions --query 'Regions[*].RegionName' --output text
-  3. aws ec2 describe-vpc-peering-connections --region \$REGION --filters Name=status-code,Values=active
-  4. aws ec2 describe-vpc-peering-connections --region \$REGION --filters Name=vpc-peering-connection-id,Values=\$PEERING_ID"
+  3. aws ec2 describe-vpc-peering-connections --region REGION --filters Name=status-code,Values=active
+  4. aws ec2 describe-vpc-peering-connections --region REGION --filters Name=vpc-peering-connection-id,Values=PEERING_ID"
 
 # Color codes
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
 NC='\033[0m'  # No color
 
 # Display script metadata
@@ -39,7 +40,7 @@ fi
 
 # Get list of AWS Organization accounts
 org_accounts=$(aws organizations list-accounts --profile "$PROFILE" --query 'Accounts[*].Id' --output text)
-echo "Organization Accounts: $org_accounts"
+echo -e "${CYAN}Organization Accounts: $org_accounts${NC}"
 echo "====================================================================="
 
 # Get list of all AWS regions
@@ -50,6 +51,7 @@ echo "\n+----------------+----------------+"
 echo "| Region         | Peering Count  |"
 echo "+----------------+----------------+"
 
+# Dictionary for storing peering connection counts
 declare -A peering_counts
 
 # Gather VPC peering connection counts per region
@@ -59,24 +61,24 @@ for REGION in $regions; do
     --query 'VpcPeeringConnections[*].VpcPeeringConnectionId' --output text)
 
   peering_count=$(echo "$peerings" | wc -w)
-  peering_counts[$REGION]=$peering_count
+  peering_counts["$REGION"]=$peering_count
 
   printf "| %-14s | %-14s |\n" "$REGION" "$peering_count"
 done
-
 echo "+----------------+----------------+"
 echo ""
 
 # Start audit for non-compliant connections
-non_compliant_found=false
+non_compliant_found=0
 
 for REGION in "${!peering_counts[@]}"; do
   if [ "${peering_counts[$REGION]}" -gt 0 ]; then
-    peerings=$(aws ec2 describe-vpc-peering-connections --region "$REGION" --profile "$PROFILE" \
-      --filters Name=status-code,Values=active \
-      --query 'VpcPeeringConnections[*].VpcPeeringConnectionId' --output text)
+    echo -e "${PURPLE}Starting audit for region: $REGION${NC}"
 
-    for PEERING_ID in $peerings; do
+    for PEERING_ID in $(aws ec2 describe-vpc-peering-connections --region "$REGION" --profile "$PROFILE" \
+      --filters Name=status-code,Values=active \
+      --query 'VpcPeeringConnections[*].VpcPeeringConnectionId' --output text); do
+
       # Get Requester and Accepter account IDs
       peering_info=$(aws ec2 describe-vpc-peering-connections --region "$REGION" --profile "$PROFILE" \
         --filters Name=vpc-peering-connection-id,Values=$PEERING_ID \
@@ -87,24 +89,22 @@ for REGION in "${!peering_counts[@]}"; do
 
       # Check if both IDs belong to the AWS Organization
       if [[ " $org_accounts " != *"$requester_id"* || " $org_accounts " != *"$accepter_id"* ]]; then
-        if [ "$non_compliant_found" = false ]; then
-          echo -e "${PURPLE}Starting audit for non-compliant VPC peering connections...${NC}"
-          non_compliant_found=true
-        fi
-
+        non_compliant_found=1
         echo "--------------------------------------------------"
         echo "Region: $REGION"
         echo "VPC Peering ID: $PEERING_ID"
         echo "Requester ID: $requester_id"
         echo "Accepter ID: $accepter_id"
-        echo "Status: ${RED}Non-Compliant (Cross-Account Peering)${NC}"
+        echo -e "Status: ${RED}Non-Compliant (Cross-Account Peering)${NC}"
         echo "--------------------------------------------------"
+      else
+        echo -e "${GREEN}Region: $REGION | VPC Peering ID: $PEERING_ID | Status: Compliant${NC}"
       fi
     done
   fi
 done
 
-if [ "$non_compliant_found" = false ]; then
+if [[ "$non_compliant_found" -eq 0 ]]; then
   echo -e "${GREEN}No non-compliant VPC peering connections found.${NC}"
 fi
 
