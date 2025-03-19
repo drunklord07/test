@@ -11,17 +11,15 @@ command_used="Commands Used:
 
 # Color codes
 GREEN='\033[0;32m'
-PURPLE='\033[0;35m'
 RED='\033[0;31m'
+PURPLE='\033[0;35m'
 NC='\033[0m'  # No color
 
 # Display script metadata
 echo ""
 echo "----------------------------------------------------------"
 echo -e "${PURPLE}Description: $description${NC}"
-echo ""
 echo -e "${PURPLE}Criteria: $criteria${NC}"
-echo ""
 echo -e "${PURPLE}$command_used${NC}"
 echo "----------------------------------------------------------"
 echo ""
@@ -50,9 +48,13 @@ fi
 echo -e "${PURPLE}Total S3 Buckets: ${GREEN}$total_buckets${NC}"
 echo "----------------------------------------------------------"
 
-# Audit S3 Bucket Ownership Settings with Parallel Execution
-non_compliant_buckets=()
+# Audit S3 Bucket Ownership Settings
+compliant_count=0
+ownership_not_configured_count=0
+object_writer_count=0
+
 lock_file="/tmp/s3_audit_lock"
+> "$lock_file"
 
 check_ownership() {
   bucket="$1"
@@ -61,14 +63,13 @@ check_ownership() {
   ownership_output=$(aws s3api get-bucket-ownership-controls --bucket "$bucket" --profile "$PROFILE" --query 'OwnershipControls.Rules[*].ObjectOwnership' --output text 2>&1)
 
   if echo "$ownership_output" | grep -q "OwnershipControlsNotFoundError"; then
-    echo "$bucket|Ownership Controls Not Configured" >> "$lock_file"
+    echo "Ownership Controls Not Configured" >> "$lock_file"
   elif echo "$ownership_output" | grep -q "ObjectWriter"; then
-    echo "$bucket|Object Ownership: ObjectWriter" >> "$lock_file"
+    echo "Object Ownership: ObjectWriter" >> "$lock_file"
+  else
+    ((compliant_count++))
   fi
 }
-
-# Cleanup lock file if exists
-> "$lock_file"
 
 # Run checks in parallel
 for bucket in $buckets; do
@@ -83,32 +84,33 @@ done
 # Wait for all background processes to finish
 wait
 
-# Read non-compliant buckets from the lock file
-mapfile -t non_compliant_buckets < "$lock_file"
+# Read non-compliant buckets from the lock file and count issues
+while IFS= read -r reason; do
+  case "$reason" in
+    "Ownership Controls Not Configured")
+      ((ownership_not_configured_count++))
+      ;;
+    "Object Ownership: ObjectWriter")
+      ((object_writer_count++))
+      ;;
+  esac
+done < "$lock_file"
 rm -f "$lock_file"
 
-# Display Non-Compliant Buckets
-non_compliant_count=${#non_compliant_buckets[@]}
+# Calculate non-compliant count
+non_compliant_count=$((ownership_not_configured_count + object_writer_count))
 
+# Display Audit Summary
 echo ""
-echo -e "${PURPLE}Total Non-Compliant Buckets: ${RED}$non_compliant_count${NC}"
 echo "----------------------------------------------------------"
-
-if [ "$non_compliant_count" -gt 0 ]; then
-  printf "%-40s %-40s\n" "Bucket Name" "Reason for Non-Compliance"
-  echo "---------------------------------------------------------------------------------------------"
-  
-  for entry in "${non_compliant_buckets[@]}"; do
-    bucket_name=$(echo "$entry" | cut -d '|' -f1)
-    bucket_reason=$(echo "$entry" | cut -d '|' -f2)
-
-    printf "%-40s %-40s\n" "$bucket_name" "$bucket_reason"
-  done
-
-  echo "---------------------------------------------------------------------------------------------"
-else
-  echo -e "${GREEN}All S3 buckets have proper ownership controls configured.${NC}"
-fi
+echo -e "                      ${PURPLE}Audit Summary${NC}"
+echo "----------------------------------------------------------"
+printf "%-30s %-15s %-40s\n" "Status" "Bucket Count" "Reason for Non-Compliance"
+echo "-------------------------------------------------------------------------------"
+printf "${GREEN}%-30s${NC} %-15s %-40s\n" "Compliant" "$compliant_count" "Buckets with ownership properly configured"
+printf "${RED}%-30s${NC} %-15s %-40s\n" "Non-Compliant" "$ownership_not_configured_count" "Ownership Controls Not Configured"
+printf "${RED}%-30s${NC} %-15s %-40s\n" "Non-Compliant" "$object_writer_count" "Object Ownership: ObjectWriter"
+echo "-------------------------------------------------------------------------------"
 
 echo ""
 echo -e "${GREEN}Audit completed.${NC}"
