@@ -7,8 +7,8 @@ criteria="This script identifies VPCs that do not have Flow Logs enabled in all 
 # Commands used
 command_used="Commands Used:
   1. aws ec2 describe-regions --query 'Regions[*].RegionName' --output text
-  2. aws ec2 describe-vpcs --region \$REGION --query 'Vpcs[*].VpcId'
-  3. aws ec2 describe-flow-logs --region \$REGION --filter 'Name=resource-id,Values=\$VPC_ID'"
+  2. aws ec2 describe-vpcs --region REGION --query 'Vpcs[*].VpcId'
+  3. aws ec2 describe-flow-logs --region REGION --filter 'Name=resource-id,Values=VPC_ID' --query 'FlowLogs' --output text"
 
 # Color codes
 GREEN='\033[0;32m'
@@ -50,38 +50,40 @@ declare -A vpc_counts
 
 # Audit each region
 for REGION in $regions; do
-  # Count VPCs
-  vpcs=$(aws ec2 describe-vpcs --region "$REGION" --profile "$PROFILE" \
-    --query 'Vpcs[*].VpcId' --output text)
+  vpcs=$(aws ec2 describe-vpcs --region "$REGION" --profile "$PROFILE" --query 'Vpcs[*].VpcId' --output text)
   vpc_count=$(echo "$vpcs" | wc -w)
-  vpc_counts[$REGION]=$vpc_count
+  vpc_counts["$REGION"]=$vpc_count
 
   printf "| %-14s | %-14s |\n" "$REGION" "$vpc_count"
 done
 echo "+----------------+----------------+"
 echo ""
 
-# Audit each VPC for Flow Logs
+# Audit each VPC for Flow Logs compliance
 for REGION in "${!vpc_counts[@]}"; do
   if [ "${vpc_counts[$REGION]}" -gt 0 ]; then
     echo -e "${PURPLE}Starting audit for region: $REGION${NC}"
+    non_compliant_found=0
 
-    for VPC_ID in $(aws ec2 describe-vpcs --region "$REGION" --profile "$PROFILE" \
-      --query 'Vpcs[*].VpcId' --output text); do
-
+    for VPC_ID in $(aws ec2 describe-vpcs --region "$REGION" --profile "$PROFILE" --query 'Vpcs[*].VpcId' --output text); do
       # Check Flow Logs for the VPC
-      flow_logs=$(aws ec2 describe-flow-logs --region "$REGION" --profile "$PROFILE" \
-        --filter "Name=resource-id,Values=$VPC_ID" --query 'FlowLogs' --output text)
+      flow_logs=$(aws ec2 describe-flow-logs --region "$REGION" --profile "$PROFILE" --filter "Name=resource-id,Values=$VPC_ID" --query 'FlowLogs' --output text)
 
       if [ -z "$flow_logs" ] || [ "$flow_logs" == "None" ]; then
-        STATUS="${RED}Non-Compliant (No Flow Logs)${NC}"
+        non_compliant_found=1
         echo "--------------------------------------------------"
         echo "Region: $REGION"
         echo "VPC ID: $VPC_ID"
-        echo "Status: $STATUS"
+        echo -e "Status: ${RED}Non-Compliant (No Flow Logs)${NC}"
         echo "--------------------------------------------------"
+      else
+        echo -e "${GREEN}Region: $REGION | VPC ID: $VPC_ID | Status: Compliant${NC}"
       fi
     done
+
+    if [[ "$non_compliant_found" -eq 0 ]]; then
+      echo -e "${GREEN}All VPCs in region $REGION have Flow Logs enabled!${NC}"
+    fi
   fi
 done
 
