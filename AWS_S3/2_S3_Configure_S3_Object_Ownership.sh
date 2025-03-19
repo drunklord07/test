@@ -50,24 +50,40 @@ fi
 echo -e "${PURPLE}Total S3 Buckets: ${GREEN}$total_buckets${NC}"
 echo "----------------------------------------------------------"
 
-# Audit S3 Bucket Ownership Settings (Parallel Execution)
-declare -a non_compliant_buckets
+# Audit S3 Bucket Ownership Settings with Parallel Execution
+non_compliant_buckets=()
+lock_file="/tmp/s3_audit_lock"
+
 check_ownership() {
   bucket="$1"
   ownership_output=$(aws s3api get-bucket-ownership-controls --bucket "$bucket" --profile "$PROFILE" --query 'OwnershipControls.Rules[*].ObjectOwnership' --output text 2>&1)
 
   if echo "$ownership_output" | grep -q "OwnershipControlsNotFoundError"; then
-    non_compliant_buckets+=("$bucket (Ownership Controls Not Configured)")
+    echo "$bucket (Ownership Controls Not Configured)" >> "$lock_file"
   elif echo "$ownership_output" | grep -q "ObjectWriter"; then
-    non_compliant_buckets+=("$bucket (Object Ownership: ObjectWriter)")
+    echo "$bucket (Object Ownership: ObjectWriter)" >> "$lock_file"
   fi
 }
 
-export -f check_ownership
-export PROFILE
+# Cleanup lock file if exists
+> "$lock_file"
 
-# Run in parallel for faster execution
-echo "$buckets" | xargs -n 1 -P 10 -I {} bash -c 'check_ownership "{}"'
+# Run checks in parallel
+for bucket in $buckets; do
+  check_ownership "$bucket" &
+  
+  # Limit parallel jobs to prevent AWS API throttling
+  while [ "$(jobs -r | wc -l)" -ge 10 ]; do
+    sleep 1
+  done
+done
+
+# Wait for all background processes to finish
+wait
+
+# Read non-compliant buckets from the lock file
+mapfile -t non_compliant_buckets < "$lock_file"
+rm -f "$lock_file"
 
 # Display Non-Compliant Buckets
 if [ ${#non_compliant_buckets[@]} -gt 0 ]; then
