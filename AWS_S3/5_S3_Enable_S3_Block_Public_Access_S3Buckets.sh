@@ -83,6 +83,7 @@ done
 wait
 
 # Read results from lock file
+non_compliant_buckets=()
 while IFS= read -r entry; do
   bucket_name=$(echo "$entry" | cut -d '|' -f1)
   reason=$(echo "$entry" | cut -d '|' -f2)
@@ -90,6 +91,7 @@ while IFS= read -r entry; do
   case "$reason" in
     "No Public Access Block")
       ((non_compliant_count++))
+      non_compliant_buckets+=("$bucket_name")
       ;;
     "Compliant")
       ((compliant_count++))
@@ -108,6 +110,18 @@ echo "--------------------------------------------------------------------------
 printf "${GREEN}%-30s${NC} %-15s %-40s\n" "Compliant" "$compliant_count" "Public Access Block Enabled"
 printf "${RED}%-30s${NC} %-15s %-40s\n" "Non-Compliant" "$non_compliant_count" "No Public Access Block Configured"
 echo "-------------------------------------------------------------------------------"
+
+# Display Non-Compliant Buckets
+if [ "$non_compliant_count" -gt 0 ]; then
+  echo ""
+  echo "----------------------------------------------------------"
+  echo -e "           ${RED}Non-Compliant S3 Buckets${NC}"
+  echo "----------------------------------------------------------"
+  for bucket in "${non_compliant_buckets[@]}"; do
+    echo -e "${RED}- $bucket${NC}"
+  done
+  echo "----------------------------------------------------------"
+fi
 
 echo ""
 echo -e "${GREEN}Audit completed.${NC}"
