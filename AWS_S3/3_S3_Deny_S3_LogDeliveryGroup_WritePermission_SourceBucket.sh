@@ -51,9 +51,9 @@ echo "----------------------------------------------------------"
 
 # Audit S3 Server Access Logging
 compliant_count=0
-logging_not_enabled_count=0
-acl_missing_write_permission_count=0
-lock_file="/tmp/s3_logging_audit_lock"
+non_compliant_logging_count=0
+non_compliant_acl_count=0
+lock_file="/tmp/s3_server_access_logging_audit_lock"
 
 # Clear lock file
 > "$lock_file"
@@ -93,16 +93,19 @@ done
 wait
 
 # Read results from lock file
+non_compliant_buckets=()
 while IFS= read -r entry; do
   bucket_name=$(echo "$entry" | cut -d '|' -f1)
   reason=$(echo "$entry" | cut -d '|' -f2)
 
   case "$reason" in
     "Logging Not Enabled")
-      ((logging_not_enabled_count++))
+      ((non_compliant_logging_count++))
+      non_compliant_buckets+=("$bucket_name")
       ;;
     "Log Delivery Group Missing WRITE Permission")
-      ((acl_missing_write_permission_count++))
+      ((non_compliant_acl_count++))
+      non_compliant_buckets+=("$bucket_name")
       ;;
     "Compliant")
       ((compliant_count++))
@@ -112,7 +115,7 @@ done < "$lock_file"
 rm -f "$lock_file"
 
 # Calculate total non-compliant count
-non_compliant_count=$((logging_not_enabled_count + acl_missing_write_permission_count))
+total_non_compliant=$((non_compliant_logging_count + non_compliant_acl_count))
 
 # Display Audit Summary
 echo ""
@@ -122,9 +125,21 @@ echo "----------------------------------------------------------"
 printf "%-30s %-15s %-40s\n" "Status" "Bucket Count" "Reason"
 echo "-------------------------------------------------------------------------------"
 printf "${GREEN}%-30s${NC} %-15s %-40s\n" "Compliant" "$compliant_count" "Proper logging configuration"
-printf "${RED}%-30s${NC} %-15s %-40s\n" "Non-Compliant" "$logging_not_enabled_count" "Logging Not Enabled"
-printf "${RED}%-30s${NC} %-15s %-40s\n" "Non-Compliant" "$acl_missing_write_permission_count" "Log Delivery Group Missing WRITE Permission"
+printf "${RED}%-30s${NC} %-15s %-40s\n" "Non-Compliant" "$non_compliant_logging_count" "Logging Not Enabled"
+printf "${RED}%-30s${NC} %-15s %-40s\n" "Non-Compliant" "$non_compliant_acl_count" "Log Delivery Group Missing WRITE Permission"
 echo "-------------------------------------------------------------------------------"
+
+# Display Non-Compliant Buckets
+if [ "$total_non_compliant" -gt 0 ]; then
+  echo ""
+  echo "----------------------------------------------------------"
+  echo -e "           ${RED}Non-Compliant S3 Buckets${NC}"
+  echo "----------------------------------------------------------"
+  for bucket in "${non_compliant_buckets[@]}"; do
+    echo -e "${RED}- $bucket${NC}"
+  done
+  echo "----------------------------------------------------------"
+fi
 
 echo ""
 echo -e "${GREEN}Audit completed.${NC}"
