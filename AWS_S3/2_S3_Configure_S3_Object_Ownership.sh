@@ -66,10 +66,8 @@ check_ownership() {
 
   if echo "$ownership_output" | grep -q "OwnershipControlsNotFoundError"; then
     echo "$bucket|Ownership Controls Not Configured" >> "$lock_file"
-    non_compliant_buckets+=("$bucket")
   elif echo "$ownership_output" | grep -q "ObjectWriter"; then
     echo "$bucket|Object Ownership: ObjectWriter" >> "$lock_file"
-    non_compliant_buckets+=("$bucket")
   else
     echo "$bucket|Compliant" >> "$lock_file"
   fi
@@ -96,9 +94,11 @@ while IFS= read -r entry; do
   case "$reason" in
     "Ownership Controls Not Configured")
       ((ownership_not_configured_count++))
+      non_compliant_buckets+=("$bucket_name")
       ;;
     "Object Ownership: ObjectWriter")
       ((object_writer_count++))
+      non_compliant_buckets+=("$bucket_name")
       ;;
     "Compliant")
       ((compliant_count++))
