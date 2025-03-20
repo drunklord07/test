@@ -19,9 +19,7 @@ NC='\033[0m'  # No color
 echo ""
 echo "----------------------------------------------------------"
 echo -e "${PURPLE}Description: $description${NC}"
-echo ""
 echo -e "${PURPLE}Criteria: $criteria${NC}"
-echo ""
 echo -e "${PURPLE}$command_used${NC}"
 echo "----------------------------------------------------------"
 echo ""
@@ -35,41 +33,96 @@ if ! aws configure list-profiles | grep -q "^$PROFILE$"; then
   exit 1
 fi
 
-# Get total number of S3 buckets
-TOTAL_BUCKETS=$(aws s3api list-buckets --profile "$PROFILE" --query 'Buckets[*].Name' --output json | jq length)
+# Fetch all S3 bucket names
+echo -e "${GREEN}Retrieving list of S3 buckets...${NC}"
+buckets=$(aws s3api list-buckets --query 'Buckets[*].Name' --profile "$PROFILE" --output text)
 
-if [ -z "$TOTAL_BUCKETS" ]; then
-  echo -e "${RED}ERROR: Unable to retrieve S3 bucket count.${NC}"
-  exit 1
+# Count total buckets
+total_buckets=$(echo "$buckets" | wc -w)
+
+if [ "$total_buckets" -eq 0 ]; then
+  echo -e "${RED}No S3 buckets found in this AWS account.${NC}"
+  exit 0
 fi
 
-echo -e "${GREEN}Total number of S3 buckets in AWS account: $TOTAL_BUCKETS${NC}"
-echo ""
+echo -e "${PURPLE}Total S3 Buckets: ${GREEN}$total_buckets${NC}"
+echo "----------------------------------------------------------"
 
-# Check bucket ACL for Authenticated Users group
-NON_COMPLIANT_BUCKETS=()
-BUCKETS=$(aws s3api list-buckets --profile "$PROFILE" --query 'Buckets[*].Name' --output text)
+# Audit S3 Bucket ACLs
+compliant_count=0
+non_compliant_buckets=()
+lock_file="/tmp/s3_acl_audit_lock"
 
-for BUCKET in $BUCKETS; do
-  OUTPUT=$(aws s3api get-bucket-acl --profile "$PROFILE" --bucket "$BUCKET" --query 'Grants[?(Grantee.URI==`http://acs.amazonaws.com/groups/global/AuthenticatedUsers`)].Permission' --output json 2>&1)
+# Clear lock file
+> "$lock_file"
 
-  if echo "$OUTPUT" | grep -q "FULL_CONTROL"; then
-    NON_COMPLIANT_BUCKETS+=("$BUCKET")
+check_acl() {
+  bucket="$1"
+
+  # Get bucket ACL settings
+  acl_output=$(aws s3api get-bucket-acl --bucket "$bucket" --profile "$PROFILE" --query 'Grants[?(Grantee.URI==`http://acs.amazonaws.com/groups/global/AuthenticatedUsers`)].Permission' --output json 2>&1)
+
+  if echo "$acl_output" | grep -q "FULL_CONTROL"; then
+    echo "$bucket|Non-Compliant (FULL_CONTROL granted to Authenticated Users)" >> "$lock_file"
+  else
+    echo "$bucket|Compliant" >> "$lock_file"
   fi
+}
+
+# Run checks in parallel
+for bucket in $buckets; do
+  check_acl "$bucket" &
+  
+  # Limit parallel jobs to prevent AWS API throttling
+  while [ "$(jobs -r | wc -l)" -ge 10 ]; do
+    sleep 1
+  done
 done
 
+# Wait for all background processes to finish
+wait
+
+# Read results from lock file
+while IFS= read -r entry; do
+  bucket_name=$(echo "$entry" | cut -d '|' -f1)
+  reason=$(echo "$entry" | cut -d '|' -f2)
+
+  case "$reason" in
+    "Non-Compliant (FULL_CONTROL granted to Authenticated Users)")
+      non_compliant_buckets+=("$bucket_name")
+      ;;
+    "Compliant")
+      ((compliant_count++))
+      ;;
+  esac
+done < "$lock_file"
+rm -f "$lock_file"
+
+# Calculate total non-compliant count
+non_compliant_count=${#non_compliant_buckets[@]}
+
 # Display Audit Summary
+echo ""
 echo "----------------------------------------------------------"
-echo -e "${GREEN}Audit Summary:${NC}"
+echo -e "                      ${PURPLE}Audit Summary${NC}"
 echo "----------------------------------------------------------"
-echo -e "${GREEN}Total S3 Buckets: $TOTAL_BUCKETS${NC}"
-if [ ${#NON_COMPLIANT_BUCKETS[@]} -eq 0 ]; then
-  echo -e "${GREEN}All S3 buckets have secure ACL settings.${NC}"
-else
-  echo -e "${RED}Non-Compliant S3 Buckets (FULL_CONTROL for Authenticated Users):${NC}"
-  for BUCKET in "${NON_COMPLIANT_BUCKETS[@]}"; do
-    echo -e "${RED}- $BUCKET${NC}"
+printf "%-30s %-15s %-40s\n" "Status" "Bucket Count" "Reason"
+echo "-------------------------------------------------------------------------------"
+printf "${GREEN}%-30s${NC} %-15s %-40s\n" "Compliant" "$compliant_count" "Buckets without FULL_CONTROL for Authenticated Users"
+printf "${RED}%-30s${NC} %-15s %-40s\n" "Non-Compliant" "$non_compliant_count" "FULL_CONTROL granted to Authenticated Users"
+echo "-------------------------------------------------------------------------------"
+
+# Display Non-Compliant Buckets
+if [ "$non_compliant_count" -gt 0 ]; then
+  echo ""
+  echo "----------------------------------------------------------"
+  echo -e "           ${RED}Non-Compliant S3 Buckets${NC}"
+  echo "----------------------------------------------------------"
+  for bucket in "${non_compliant_buckets[@]}"; do
+    echo -e "${RED}- $bucket${NC}"
   done
+  echo "----------------------------------------------------------"
 fi
-echo "----------------------------------------------------------"
+
+echo ""
 echo -e "${GREEN}Audit completed.${NC}"
